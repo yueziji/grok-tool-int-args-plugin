@@ -40,14 +40,14 @@ plugins:
 
 | 字段 | 类型 | 默认 | 说明 |
 |------|------|------|------|
-| `models` | 数组 | `["grok", "xai"]` | 大小写不敏感的模型子串匹配；空数组表示全部模型 |
+| `models` | 数组 | `["grok", "xai"]` | 大小写不敏感的模型规则,只在名称开头或分隔符(`-`、`_`、`.`、`/`、`:`、`@`)之后匹配:`xai` 能命中 `xai-beta`、`openrouter/x-ai/grok-4`,不会误伤 `pixai-diffusion`。显式空数组(`models: []`)匹配全部模型;键存在但值为空(`models:` 后面不写)保持默认值 |
 | `chat_completions` | 布尔 | `true` | 处理 Chat Completions |
 | `responses` | 布尔 | `true` | 处理 Responses / openai-response |
 | `include_custom_input` | 布尔 | `false` | 是否同时处理 custom tool 的 `input` |
 
 ## 流式说明
 
-不会把流式变成非流式。插件同时支持标准 SSE `data:` 帧和 WebSocket 裸 JSON chunk。Responses 的不完整 delta 会原样跳过；Chat Completions 的跨 chunk 参数按响应/工具 ID 暂存，其他内容继续下发，并在参数组成完整 JSON 后一次性下发修复后的参数。
+不会把流式变成非流式。插件同时支持标准 SSE `data:` 帧和 WebSocket 裸 JSON chunk。Responses 的不完整 delta 会原样跳过；Chat Completions 的跨 chunk 参数按响应/工具 ID 暂存，其他内容继续下发，并在参数组成完整 JSON 后一次性下发修复后的参数。若上游流在参数闭合前就结束（异常中断），收尾 chunk 会把暂存的参数原样冲刷下发，不会丢失。
 
 ## 本地构建
 

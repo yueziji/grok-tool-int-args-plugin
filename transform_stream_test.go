@@ -137,6 +137,99 @@ func TestChatCompletionFragmentedArguments(t *testing.T) {
 	}
 }
 
+func TestChatCompletionFinishFlushesWithheldArguments(t *testing.T) {
+	resetChatArgumentStreams()
+	t.Cleanup(resetChatArgumentStreams)
+
+	first := []byte(`data: {"id":"chatcmpl_2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"timeout_ms\":230"}}]},"finish_reason":null}]}`)
+	if _, ok := fixStreamChunkBody(first, false); !ok {
+		t.Fatal("expected incomplete arguments to be withheld")
+	}
+
+	// Real streams finish with an empty delta; the withheld fragment must be
+	// flushed here instead of silently expiring.
+	final := []byte(`data: {"id":"chatcmpl_2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)
+	finalOut, ok := fixStreamChunkBody(final, false)
+	if !ok {
+		t.Fatal("expected finish chunk to flush withheld arguments")
+	}
+	if got := chatChunkArguments(t, finalOut); got != `{"timeout_ms":230` {
+		t.Fatalf("flushed arguments = %q, want raw partial fragment", got)
+	}
+	if hasWithheldChatArguments() {
+		t.Fatal("withheld state should be empty after flush")
+	}
+
+	// A finish chunk with no withheld state stays untouched.
+	resetChatArgumentStreams()
+	out, ok := fixStreamChunkBody(final, false)
+	if ok || !bytes.Equal(out, final) {
+		t.Fatalf("finish chunk without state changed: %q ok=%v", out, ok)
+	}
+}
+
+func TestChatCompletionFinishFlushMultipleTools(t *testing.T) {
+	resetChatArgumentStreams()
+	t.Cleanup(resetChatArgumentStreams)
+
+	first := []byte(`data: {"id":"chatcmpl_3","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":1"}},{"index":1,"function":{"arguments":"{\"b\":2"}}]},"finish_reason":null}]}`)
+	if _, ok := fixStreamChunkBody(first, false); !ok {
+		t.Fatal("expected fragments to be withheld")
+	}
+
+	final := []byte(`data: {"id":"chatcmpl_3","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)
+	finalOut, ok := fixStreamChunkBody(final, false)
+	if !ok {
+		t.Fatal("expected flush")
+	}
+	var root map[string]any
+	if errUnmarshal := json.Unmarshal(sseDataPayload(t, finalOut), &root); errUnmarshal != nil {
+		t.Fatal(errUnmarshal)
+	}
+	delta := root["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
+	toolCalls := delta["tool_calls"].([]any)
+	if len(toolCalls) != 2 {
+		t.Fatalf("tool_calls = %v, want 2 flushed entries", toolCalls)
+	}
+	firstCall := toolCalls[0].(map[string]any)
+	if firstCall["index"].(float64) != 0 {
+		t.Fatalf("first flushed index = %v", firstCall["index"])
+	}
+	if got := firstCall["function"].(map[string]any)["arguments"].(string); got != `{"a":1` {
+		t.Fatalf("first flushed arguments = %q", got)
+	}
+	secondCall := toolCalls[1].(map[string]any)
+	if secondCall["index"].(float64) != 1 {
+		t.Fatalf("second flushed index = %v", secondCall["index"])
+	}
+}
+
+func TestPlainTextChunksUntouched(t *testing.T) {
+	resetChatArgumentStreams()
+	t.Cleanup(resetChatArgumentStreams)
+
+	inputs := [][]byte{
+		[]byte(`data: {"id":"chatcmpl_4","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`),
+		[]byte(`data: {"type":"response.output_text.delta","delta":"hello"}`),
+		[]byte(`data: {"id":"chatcmpl_4","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`),
+	}
+	for _, input := range inputs {
+		out, ok := fixStreamChunkBody(input, false)
+		if ok || !bytes.Equal(out, input) {
+			t.Fatalf("plain chunk changed: in=%q out=%q ok=%v", input, out, ok)
+		}
+	}
+
+	// The custom-tool "input" marker only matters when the option is on.
+	custom := []byte(`data: {"item":{"type":"custom_tool_call","input":"{\"n\":5.0}"}}`)
+	if out, ok := fixStreamChunkBody(custom, false); ok || !bytes.Equal(out, custom) {
+		t.Fatalf("custom input rewritten while disabled: %q", out)
+	}
+	if _, ok := fixStreamChunkBody(custom, true); !ok {
+		t.Fatal("expected custom input rewrite when enabled")
+	}
+}
+
 func TestExactIntegerConversion(t *testing.T) {
 	input := []byte(`{"type":"function_call","arguments":"{\"large\":9007199254740993.0,\"max\":9223372036854775807.0,\"exponent\":2.3e4,\"decimal\":1.0000000000000001}"}`)
 	out, ok := fixToolIntegerArgs(input, false)

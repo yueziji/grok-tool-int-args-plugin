@@ -16,15 +16,16 @@ type lifecycleRequest struct {
 }
 
 type pluginConfig struct {
-	// Models is a case-insensitive substring list matched against Model and RequestedModel.
-	// Empty means all models.
-	Models []string `yaml:"models"`
+	// Models is a case-insensitive rule list matched against Model and RequestedModel.
+	// Rules match at the start of the name or right after a separator. Empty list
+	// means all models.
+	Models []string
 	// ChatCompletions enables chat-completions shaped payloads.
-	ChatCompletions *bool `yaml:"chat_completions"`
+	ChatCompletions *bool
 	// Responses enables openai-response / Responses shaped payloads.
-	Responses *bool `yaml:"responses"`
+	Responses *bool
 	// IncludeCustomInput also rewrites custom tool "input" JSON fields.
-	IncludeCustomInput bool `yaml:"include_custom_input"`
+	IncludeCustomInput bool
 }
 
 func defaultPluginConfig() pluginConfig {
@@ -72,18 +73,28 @@ func configure(raw []byte) error {
 }
 
 func decodeConfig(raw []byte) (pluginConfig, error) {
-	cfg := defaultPluginConfig()
-	if errUnmarshal := yaml.Unmarshal(raw, &cfg); errUnmarshal != nil {
+	// Models decodes through a pointer so `models:` written as YAML null keeps
+	// the grok/xai default; only an explicit `models: []` opts into all models.
+	var decoded struct {
+		Models             *[]string `yaml:"models"`
+		ChatCompletions    *bool     `yaml:"chat_completions"`
+		Responses          *bool     `yaml:"responses"`
+		IncludeCustomInput bool      `yaml:"include_custom_input"`
+	}
+	if errUnmarshal := yaml.Unmarshal(raw, &decoded); errUnmarshal != nil {
 		return pluginConfig{}, errUnmarshal
 	}
-	if cfg.ChatCompletions == nil {
-		enabled := true
-		cfg.ChatCompletions = &enabled
+	cfg := defaultPluginConfig()
+	if decoded.Models != nil {
+		cfg.Models = *decoded.Models
 	}
-	if cfg.Responses == nil {
-		enabled := true
-		cfg.Responses = &enabled
+	if decoded.ChatCompletions != nil {
+		cfg.ChatCompletions = decoded.ChatCompletions
 	}
+	if decoded.Responses != nil {
+		cfg.Responses = decoded.Responses
+	}
+	cfg.IncludeCustomInput = decoded.IncludeCustomInput
 	return cfg, nil
 }
 
@@ -111,10 +122,35 @@ func shouldProcessModel(cfg pluginConfig, model, requestedModel string) bool {
 			if candidate == "" {
 				continue
 			}
-			if strings.Contains(candidate, needle) {
+			if modelRuleMatches(candidate, needle) {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// modelRuleMatches reports whether needle occurs in candidate at the start or
+// right after a separator, so "xai" matches "xai-beta" and "openrouter/xai/grok"
+// but not "pixai-diffusion".
+func modelRuleMatches(candidate, needle string) bool {
+	for offset := 0; ; {
+		index := strings.Index(candidate[offset:], needle)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		if index == 0 || isModelSeparator(candidate[index-1]) {
+			return true
+		}
+		offset = index + 1
+	}
+}
+
+func isModelSeparator(c byte) bool {
+	switch c {
+	case '-', '_', '.', '/', ':', '@', ' ':
+		return true
 	}
 	return false
 }

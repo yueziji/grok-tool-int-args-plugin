@@ -10,7 +10,7 @@ import (
 const pluginIdentifier = "grok-tool-int-args"
 
 // pluginVersion is overridden at build time with -ldflags "-X main.pluginVersion=...".
-var pluginVersion = "0.1.1-dev"
+var pluginVersion = "0.2.0-dev"
 
 type envelope struct {
 	OK     bool            `json:"ok"`
@@ -66,7 +66,7 @@ func pluginRegistration() registration {
 			Author:           "yueziji",
 			GitHubRepository: "https://github.com/yueziji/grok-tool-int-args-plugin",
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Case-insensitive model substrings to match. Empty matches all models. Default: [\"grok\", \"xai\"]."},
+				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Case-insensitive model rules matched at the start of the model name or right after a separator (- _ . / : @). Empty list matches all models; a null value keeps the default. Default: [\"grok\", \"xai\"]."},
 				{Name: "chat_completions", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Rewrite Chat Completions tool arguments. Default: true."},
 				{Name: "responses", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Rewrite Responses / openai-response tool arguments. Default: true."},
 				{Name: "include_custom_input", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Also rewrite custom tool input JSON fields. Default: false."},

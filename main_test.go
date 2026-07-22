@@ -124,20 +124,7 @@ func TestFixToolIntegerArgs_ResponsesFunctionCall(t *testing.T) {
 	if args["command"] != "ls" {
 		t.Fatalf("command = %v", args["command"])
 	}
-	// Re-marshal arguments alone to ensure integer literals (no .0).
-	rawArgs, errMarshal := json.Marshal(args)
-	if errMarshal != nil {
-		t.Fatal(errMarshal)
-	}
-	// After unmarshal into map[string]any, numbers become float64 and marshal back with no fractional part for integers.
-	var round any
-	if errUnmarshal := json.Unmarshal(rawArgs, &round); errUnmarshal != nil {
-		t.Fatal(errUnmarshal)
-	}
 	// Validate source rewritten string does not keep ".0" for timeout_ms.
-	argsText := parseArgumentsString(t, out, "item", "arguments")
-	_ = argsText
-	// Extract the arguments field text and ensure it has integer form.
 	var wrapper map[string]any
 	if errUnmarshal := json.Unmarshal(out, &wrapper); errUnmarshal != nil {
 		t.Fatal(errUnmarshal)
@@ -247,8 +234,21 @@ func TestShouldProcessModel(t *testing.T) {
 	if !shouldProcessModel(cfg, "xai-beta", "other") {
 		t.Fatal("expected xai match")
 	}
+	if !shouldProcessModel(cfg, "openrouter/x-ai/grok-4", "") {
+		t.Fatal("expected prefixed grok match")
+	}
+	if !shouldProcessModel(cfg, "", "XAI-Grok") {
+		t.Fatal("expected requested model match")
+	}
 	if shouldProcessModel(cfg, "gpt-5.5", "codex") {
 		t.Fatal("expected non-match")
+	}
+	// "xai" must match on separator boundaries only, not inside another word.
+	if shouldProcessModel(cfg, "pixai-diffusion", "") {
+		t.Fatal("pixai should not match rule xai")
+	}
+	if !shouldProcessModel(cfg, "pix-xai-diffusion", "") {
+		t.Fatal("expected separator-delimited xai match")
 	}
 	cfg.Models = nil
 	if !shouldProcessModel(cfg, "gpt-5.5", "") {
@@ -340,6 +340,33 @@ func TestDecodeConfigDefaults(t *testing.T) {
 	}
 	if !boolOrDefault(cfg.ChatCompletions, false) || !boolOrDefault(cfg.Responses, false) {
 		t.Fatal("booleans should default true when omitted")
+	}
+}
+
+func TestDecodeConfigModelsSpellings(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want []string
+	}{
+		{"absent key keeps default", "enabled: true\n", []string{"grok", "xai"}},
+		{"null value keeps default", "enabled: true\nmodels:\n", []string{"grok", "xai"}},
+		{"explicit empty list matches all", "models: []\n", []string{}},
+		{"explicit list overrides", "models: [\"grok\"]\n", []string{"grok"}},
+	}
+	for _, testCase := range cases {
+		cfg, errDecode := decodeConfig([]byte(testCase.yaml))
+		if errDecode != nil {
+			t.Fatalf("%s: %v", testCase.name, errDecode)
+		}
+		if len(cfg.Models) != len(testCase.want) {
+			t.Fatalf("%s: models = %#v, want %#v", testCase.name, cfg.Models, testCase.want)
+		}
+		for index := range testCase.want {
+			if cfg.Models[index] != testCase.want[index] {
+				t.Fatalf("%s: models = %#v, want %#v", testCase.name, cfg.Models, testCase.want)
+			}
+		}
 	}
 }
 

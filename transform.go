@@ -101,6 +101,9 @@ func fixSSEDataLine(line []byte, includeCustomInput bool) ([]byte, bool) {
 }
 
 func fixStreamJSONPayload(payload []byte, includeCustomInput bool) ([]byte, bool) {
+	if !streamPayloadNeedsInspection(payload, includeCustomInput) {
+		return payload, false
+	}
 	if isIncompleteFunctionCallArgumentsDelta(payload) {
 		return payload, false
 	}
@@ -113,6 +116,20 @@ func fixStreamJSONPayload(payload []byte, includeCustomInput bool) ([]byte, bool
 		return candidate, true
 	}
 	return payload, false
+}
+
+// streamPayloadNeedsInspection is a cheap byte-level prefilter so plain text
+// delta chunks skip the three JSON parses below. Withheld chat arguments force
+// full inspection: the finishing chunk that must flush them can lack every
+// marker (for example an empty delta with finish_reason "stop").
+func streamPayloadNeedsInspection(payload []byte, includeCustomInput bool) bool {
+	if hasWithheldChatArguments() {
+		return true
+	}
+	if bytes.Contains(payload, []byte(`"arguments"`)) || bytes.Contains(payload, []byte(`"tool_calls"`)) {
+		return true
+	}
+	return includeCustomInput && bytes.Contains(payload, []byte(`"input"`))
 }
 
 func decodeJSONValue(raw []byte) (any, bool) {

@@ -44,7 +44,7 @@ plugins:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `models` | array | `["grok", "xai"]` | Case-insensitive substrings matched against `Model` / `RequestedModel`. Empty list matches all models. |
+| `models` | array | `["grok", "xai"]` | Case-insensitive rules matched against `Model` / `RequestedModel` at the start of the name or right after a separator (`-`, `_`, `.`, `/`, `:`, `@`). `xai` matches `xai-beta` and `openrouter/x-ai/grok-4` but not `pixai-diffusion`. An explicit empty list (`models: []`) matches all models; a null value (`models:` with nothing after it) keeps the default. |
 | `chat_completions` | bool | `true` | Rewrite Chat Completions tool arguments. |
 | `responses` | bool | `true` | Rewrite Responses / `openai-response` tool arguments. |
 | `include_custom_input` | bool | `false` | Also rewrite custom-tool `input` JSON fields. |
@@ -60,6 +60,7 @@ This plugin does **not** convert streaming into non-streaming.
 - Only complete argument payloads are rewritten (`function_call_arguments.done`, `output_item.done`, completed outputs, full chat tool_calls, etc.)
 - Incomplete argument deltas are skipped on purpose
 - Fragmented Chat Completions arguments are accumulated by response/tool ID; other chunk content continues downstream, and the complete arguments are emitted once valid JSON closes
+- If the upstream stream finishes before the buffered arguments close (aborted stream), the finishing chunk flushes whatever was withheld so no argument bytes are lost
 
 ## Build Locally
 
