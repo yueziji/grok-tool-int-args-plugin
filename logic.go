@@ -127,7 +127,7 @@ func shouldProcessSourceFormat(cfg pluginConfig, sourceFormat string) bool {
 	case "openai", "chat-completions", "chat_completions":
 		return boolOrDefault(cfg.ChatCompletions, true)
 	default:
-		return true
+		return false
 	}
 }
 
@@ -190,10 +190,7 @@ func handleStreamChunkIntercept(raw []byte) ([]byte, error) {
 	if !shouldProcessRequest(cfg, req.SourceFormat, req.Model, req.RequestedModel) {
 		return okEnvelope(pluginapi.StreamChunkInterceptResponse{})
 	}
-	if isIncompleteFunctionCallArgumentsDelta(req.Body) {
-		return okEnvelope(pluginapi.StreamChunkInterceptResponse{})
-	}
-	fixed, ok := fixToolIntegerArgs(req.Body, cfg.IncludeCustomInput)
+	fixed, ok := fixStreamChunkBody(req.Body, cfg.IncludeCustomInput)
 	if !ok {
 		return okEnvelope(pluginapi.StreamChunkInterceptResponse{})
 	}

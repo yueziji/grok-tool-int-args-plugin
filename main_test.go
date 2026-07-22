@@ -279,7 +279,7 @@ func TestHandleResponseIntercept(t *testing.T) {
 
 func TestHandleStreamChunkSkipsDelta(t *testing.T) {
 	currentConfig.Store(defaultPluginConfig())
-	body := []byte(`{"type":"response.function_call_arguments.delta","delta":"{\"timeout_ms\":23000.0}"}`)
+	body := []byte(`data: {"type":"response.function_call_arguments.delta","delta":"{\"timeout_ms\":23000.0}"}`)
 	req := pluginapi.StreamChunkInterceptRequest{
 		SourceFormat:   "openai-response",
 		Model:          "grok-4",
@@ -300,7 +300,7 @@ func TestHandleStreamChunkSkipsDelta(t *testing.T) {
 
 func TestHandleStreamChunkDoneEvent(t *testing.T) {
 	currentConfig.Store(defaultPluginConfig())
-	body := []byte(`{"type":"response.function_call_arguments.done","arguments":"{\"timeout_ms\":23000.0}"}`)
+	body := []byte(`data: {"type":"response.function_call_arguments.done","arguments":"{\"timeout_ms\":23000.0}"}`)
 	req := pluginapi.StreamChunkInterceptRequest{
 		SourceFormat:   "openai-response",
 		Model:          "grok-4",
@@ -317,7 +317,14 @@ func TestHandleStreamChunkDoneEvent(t *testing.T) {
 	if len(result.Body) == 0 {
 		t.Fatal("expected rewritten body")
 	}
-	assertArgumentsInt(t, result.Body, []string{"arguments"}, "timeout_ms", 23000)
+	assertArgumentsInt(t, sseDataPayload(t, result.Body), []string{"arguments"}, "timeout_ms", 23000)
+}
+
+func TestUnknownSourceFormatIsSkipped(t *testing.T) {
+	cfg := defaultPluginConfig()
+	if shouldProcessSourceFormat(cfg, "claude") {
+		t.Fatal("unknown source format should be skipped")
+	}
 }
 
 func TestDecodeConfigDefaults(t *testing.T) {

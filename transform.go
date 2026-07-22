@@ -3,7 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"math"
+	"io"
+	"math/big"
 	"strings"
 )
 
@@ -16,14 +17,8 @@ func fixToolIntegerArgs(body []byte, includeCustomInput bool) ([]byte, bool) {
 		return body, false
 	}
 
-	decoder := json.NewDecoder(bytes.NewReader(trimmed))
-	decoder.UseNumber()
-	var root any
-	if errDecode := decoder.Decode(&root); errDecode != nil {
-		return body, false
-	}
-	// Reject trailing garbage without treating it as success.
-	if decoder.More() {
+	root, ok := decodeJSONValue(trimmed)
+	if !ok {
 		return body, false
 	}
 
@@ -32,32 +27,141 @@ func fixToolIntegerArgs(body []byte, includeCustomInput bool) ([]byte, bool) {
 		return body, false
 	}
 
-	out, errMarshal := json.Marshal(root)
+	out, errMarshal := marshalJSONValue(root)
 	if errMarshal != nil || len(out) == 0 {
 		return body, false
 	}
 	return out, true
 }
 
+// fixStreamChunkBody accepts both bare JSON websocket chunks and standard SSE
+// frames. For SSE, only JSON payloads on data: lines are rewritten; framing,
+// line endings, event names, comments, and terminal markers stay untouched.
+func fixStreamChunkBody(body []byte, includeCustomInput bool) ([]byte, bool) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return body, false
+	}
+	if trimmed[0] == '{' || trimmed[0] == '[' {
+		return fixStreamJSONPayload(body, includeCustomInput)
+	}
+
+	lines := bytes.SplitAfter(body, []byte{'\n'})
+	var out bytes.Buffer
+	out.Grow(len(body))
+	changed := false
+	for _, line := range lines {
+		fixed, lineChanged := fixSSEDataLine(line, includeCustomInput)
+		out.Write(fixed)
+		changed = changed || lineChanged
+	}
+	if !changed {
+		return body, false
+	}
+	return out.Bytes(), true
+}
+
+func fixSSEDataLine(line []byte, includeCustomInput bool) ([]byte, bool) {
+	contentEnd := len(line)
+	if contentEnd > 0 && line[contentEnd-1] == '\n' {
+		contentEnd--
+	}
+	if contentEnd > 0 && line[contentEnd-1] == '\r' {
+		contentEnd--
+	}
+	content := line[:contentEnd]
+	field := bytes.TrimLeft(content, " \t")
+	if !bytes.HasPrefix(field, []byte("data:")) {
+		return line, false
+	}
+
+	fieldOffset := len(content) - len(field)
+	valueStart := fieldOffset + len("data:")
+	for valueStart < contentEnd && (content[valueStart] == ' ' || content[valueStart] == '\t') {
+		valueStart++
+	}
+	valueEnd := contentEnd
+	for valueEnd > valueStart && (content[valueEnd-1] == ' ' || content[valueEnd-1] == '\t') {
+		valueEnd--
+	}
+	payload := content[valueStart:valueEnd]
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		return line, false
+	}
+
+	fixed, changed := fixStreamJSONPayload(payload, includeCustomInput)
+	if !changed {
+		return line, false
+	}
+	out := make([]byte, 0, len(line)-len(payload)+len(fixed))
+	out = append(out, line[:valueStart]...)
+	out = append(out, fixed...)
+	out = append(out, line[valueEnd:]...)
+	return out, true
+}
+
+func fixStreamJSONPayload(payload []byte, includeCustomInput bool) ([]byte, bool) {
+	if isIncompleteFunctionCallArgumentsDelta(payload) {
+		return payload, false
+	}
+	candidate, chatChanged := rewriteChatCompletionArgumentFragments(payload)
+	fixed, argsChanged := fixToolIntegerArgs(candidate, includeCustomInput)
+	if argsChanged {
+		return fixed, true
+	}
+	if chatChanged {
+		return candidate, true
+	}
+	return payload, false
+}
+
+func decodeJSONValue(raw []byte) (any, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if errDecode := decoder.Decode(&value); errDecode != nil {
+		return nil, false
+	}
+	var trailing any
+	if errTrailing := decoder.Decode(&trailing); errTrailing != io.EOF {
+		return nil, false
+	}
+	return value, true
+}
+
+func marshalJSONValue(value any) ([]byte, error) {
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if errEncode := encoder.Encode(value); errEncode != nil {
+		return nil, errEncode
+	}
+	return bytes.TrimSuffix(out.Bytes(), []byte{'\n'}), nil
+}
+
 func walkAndFixToolArgs(node any, includeCustomInput bool) bool {
 	switch value := node.(type) {
 	case map[string]any:
 		changed := false
+		nodeType, _ := value["type"].(string)
+		if nodeType == "function_call" || nodeType == "response.function_call_arguments.done" {
+			if fixed, ok := fixArgumentsField(value["arguments"]); ok {
+				value["arguments"] = fixed
+				changed = true
+			}
+		}
+		if includeCustomInput && nodeType == "custom_tool_call" {
+			if fixed, ok := fixArgumentsField(value["input"]); ok {
+				value["input"] = fixed
+				changed = true
+			}
+		}
 		for key, child := range value {
-			switch {
-			case key == "arguments":
-				if fixed, ok := fixArgumentsField(child); ok {
-					value[key] = fixed
+			if key == "tool_calls" {
+				if fixChatToolCalls(child) {
 					changed = true
-					continue
 				}
-			case includeCustomInput && key == "input":
-				// custom_tool_call style payloads may carry structured input.
-				if fixed, ok := fixArgumentsField(child); ok {
-					value[key] = fixed
-					changed = true
-					continue
-				}
+				continue
 			}
 			if walkAndFixToolArgs(child, includeCustomInput) {
 				changed = true
@@ -75,6 +179,29 @@ func walkAndFixToolArgs(node any, includeCustomInput bool) bool {
 	default:
 		return false
 	}
+}
+
+func fixChatToolCalls(node any) bool {
+	toolCalls, ok := node.([]any)
+	if !ok {
+		return false
+	}
+	changed := false
+	for _, rawToolCall := range toolCalls {
+		toolCall, ok := rawToolCall.(map[string]any)
+		if !ok {
+			continue
+		}
+		function, ok := toolCall["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if fixed, ok := fixArgumentsField(function["arguments"]); ok {
+			function["arguments"] = fixed
+			changed = true
+		}
+	}
+	return changed
 }
 
 func fixArgumentsField(value any) (any, bool) {
@@ -96,36 +223,40 @@ func fixArgumentsField(value any) (any, bool) {
 }
 
 func fixArgumentsJSONString(raw string) (string, bool) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return raw, false
-	}
-	if trimmed[0] != '{' && trimmed[0] != '[' {
-		return raw, false
-	}
-
-	decoder := json.NewDecoder(strings.NewReader(trimmed))
-	decoder.UseNumber()
-	var payload any
-	if errDecode := decoder.Decode(&payload); errDecode != nil {
-		return raw, false
-	}
-	if decoder.More() {
-		return raw, false
-	}
-	switch payload.(type) {
-	case map[string]any, []any:
-	default:
+	payload, ok := parseArgumentsJSONString(raw)
+	if !ok {
 		return raw, false
 	}
 	if !integerizeValue(payload) {
 		return raw, false
 	}
-	out, errMarshal := json.Marshal(payload)
+	out, errMarshal := marshalJSONValue(payload)
 	if errMarshal != nil || len(out) == 0 {
 		return raw, false
 	}
 	return string(out), true
+}
+
+func parseArgumentsJSONString(raw string) (any, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed[0] != '{' && trimmed[0] != '[' {
+		return nil, false
+	}
+	payload, ok := decodeJSONValue([]byte(trimmed))
+	if !ok {
+		return nil, false
+	}
+	switch payload.(type) {
+	case map[string]any, []any:
+		return payload, true
+	default:
+		return nil, false
+	}
+}
+
+func isCompleteArgumentsJSON(raw string) bool {
+	_, ok := parseArgumentsJSONString(raw)
+	return ok
 }
 
 func integerizeValue(node any) bool {
@@ -165,10 +296,6 @@ func integerizeLeaf(node any) (any, bool) {
 	switch value := node.(type) {
 	case json.Number:
 		return integerizeNumber(value)
-	case float64:
-		return integerizeFloat64(value)
-	case float32:
-		return integerizeFloat64(float64(value))
 	default:
 		return nil, false
 	}
@@ -183,25 +310,9 @@ func integerizeNumber(num json.Number) (any, bool) {
 	if !strings.ContainsAny(text, ".eE") {
 		return nil, false
 	}
-	if i, errParse := num.Int64(); errParse == nil {
-		return i, true
-	}
-	f, errFloat := num.Float64()
-	if errFloat != nil {
+	rat, ok := new(big.Rat).SetString(text)
+	if !ok || !rat.IsInt() || !rat.Num().IsInt64() {
 		return nil, false
 	}
-	return integerizeFloat64(f)
-}
-
-func integerizeFloat64(f float64) (any, bool) {
-	if math.IsNaN(f) || math.IsInf(f, 0) {
-		return nil, false
-	}
-	if f != math.Trunc(f) {
-		return nil, false
-	}
-	if f > float64(math.MaxInt64) || f < float64(math.MinInt64) {
-		return nil, false
-	}
-	return int64(f), true
+	return rat.Num().Int64(), true
 }

@@ -56,8 +56,10 @@ plugins:
 This plugin does **not** convert streaming into non-streaming.
 
 - Stream chunks are processed one-by-one and immediately returned to CPA
+- Standard SSE `data:` frames and bare JSON websocket chunks are both supported
 - Only complete argument payloads are rewritten (`function_call_arguments.done`, `output_item.done`, completed outputs, full chat tool_calls, etc.)
 - Incomplete argument deltas are skipped on purpose
+- Fragmented Chat Completions arguments are accumulated by response/tool ID; other chunk content continues downstream, and the complete arguments are emitted once valid JSON closes
 
 ## Build Locally
 
@@ -74,10 +76,11 @@ go build -buildmode=c-shared -o grok-tool-int-args.so .
 go build -buildmode=c-shared -o grok-tool-int-args.dylib .
 ```
 
-Run tests (no CGO required for unit tests of pure logic when using the default test target with cgo disabled helpers):
+Run tests (pure-logic tests also work with CGO disabled):
 
 ```bash
 go test .
+CGO_ENABLED=0 go test .
 ```
 
 ## Example Rewrite

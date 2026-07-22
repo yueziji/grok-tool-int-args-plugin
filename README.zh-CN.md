@@ -47,7 +47,7 @@ plugins:
 
 ## 流式说明
 
-不会把流式变成非流式。只在 arguments 已完整的事件上改写，delta 碎片直接跳过。
+不会把流式变成非流式。插件同时支持标准 SSE `data:` 帧和 WebSocket 裸 JSON chunk。Responses 的不完整 delta 会原样跳过；Chat Completions 的跨 chunk 参数按响应/工具 ID 暂存，其他内容继续下发，并在参数组成完整 JSON 后一次性下发修复后的参数。
 
 ## 本地构建
 
@@ -56,6 +56,7 @@ plugins:
 ```bash
 go build -buildmode=c-shared -o grok-tool-int-args.dll .
 go test .
+CGO_ENABLED=0 go test .
 ```
 
 ## License

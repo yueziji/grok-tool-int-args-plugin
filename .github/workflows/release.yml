@@ -34,6 +34,14 @@ jobs:
       - name: Test
         run: go test .
 
+      - name: Test without CGO
+        env:
+          CGO_ENABLED: "0"
+        run: go test .
+
+      - name: Vet
+        run: go vet ./...
+
   build:
     name: Build ${{ matrix.target }}
     needs: test
