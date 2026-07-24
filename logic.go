@@ -63,12 +63,6 @@ func configure(raw []byte) error {
 		cfg = decoded
 	}
 	currentConfig.Store(cfg)
-	pluginLog("", "info", "grok-tool-int-args: configured", map[string]any{
-		"models":               cfg.Models,
-		"chat_completions":     boolOrDefault(cfg.ChatCompletions, true),
-		"responses":            boolOrDefault(cfg.Responses, true),
-		"include_custom_input": cfg.IncludeCustomInput,
-	})
 	return nil
 }
 
