@@ -13,7 +13,12 @@ CLIProxyAPI（CPA）原生插件：把工具调用 `arguments` 里的整数值�
 - 失败放行：半截/非法 JSON 原样返回
 - **保持流式**：逐 chunk 处理，不会把流缓冲成非流式
 - 跳过不完整的 `response.function_call_arguments.delta`
-- Responses 流式事件缺少 `sequence_number` 时会按流内顺序补齐，已有值保持不变
+- Responses 流式事件缺少 `sequence_number` 时，会根据宿主提供的已下发流历史推导下一个序号，已有值保持不变
+- 可通过 `repair_sequence_numbers: false` 关闭序号修复
+
+## 运行要求
+
+- CPA 宿主版本 **v7.2.129 或更高**（RPC schema 3）
 
 ## 安装
 
@@ -35,6 +40,7 @@ plugins:
       chat_completions: true
       responses: true
       include_custom_input: false
+      repair_sequence_numbers: true
 ```
 
 ## 配置
@@ -45,7 +51,9 @@ plugins:
 
 `https://raw.githubusercontent.com/yueziji/grok-tool-int-args-plugin/main/registry.json`
 
-把这个 URL 添加到 CPA 的自定义插件源后，CPA 会根据本仓库的 GitHub Release 检查和安装更新。
+把这个 URL 添加到 CPA 的自定义插件源后，CPA 会从本仓库的 GitHub Release 检查和安装更新。Release 资产严格使用 `grok-tool-int-args_<版本>_<goos>_<goarch>.zip` 命名，并通过随附的 `checksums.txt` 校验。
+
+支持的平台：`windows/amd64`、`linux/amd64`、`linux/arm64`、`darwin/arm64`。
 
 | 字段 | 类型 | 默认 | 说明 |
 |------|------|------|------|
@@ -53,10 +61,11 @@ plugins:
 | `chat_completions` | 布尔 | `true` | 处理 Chat Completions |
 | `responses` | 布尔 | `true` | 处理 Responses / openai-response |
 | `include_custom_input` | 布尔 | `false` | 是否同时处理 custom tool 的 `input` |
+| `repair_sequence_numbers` | 布尔 | `true` | 根据已下发流历史补齐 Responses 事件缺少的 `sequence_number` |
 
 ## 流式说明
 
-不会把流式变成非流式。插件同时支持标准 SSE `data:` 帧和 WebSocket 裸 JSON chunk。Responses 事件缺少 `sequence_number` 时会按流内顺序补齐，已有序号会保留；Responses 的不完整 delta 仍会跳过参数修复。Chat Completions 的跨 chunk 参数按响应/工具 ID 暂存，其他内容继续下发，并在参数组成完整 JSON 后一次性下发修复后的参数。若上游流在参数闭合前就结束（异常中断），收尾 chunk 会把暂存的参数原样冲刷下发，不会丢失。
+不会把流式变成非流式。插件同时支持标准 SSE `data:` 帧和 WebSocket 裸 JSON chunk。Responses 事件缺少 `sequence_number` 时会根据宿主提供的已下发流历史推导下一个序号，已有序号会保留；Responses 的不完整 delta 仍会跳过参数修复。Chat Completions 的跨 chunk 参数按响应/工具 ID 暂存，其他内容继续下发，并在参数组成完整 JSON 后一次性下发修复后的参数。若上游流在参数闭合前就结束（异常中断），收尾 chunk 会把暂存的参数原样冲刷下发，不会丢失。若一个 JSON 事件被上游拆到两个 chunk，拦截时两半都不是合法 JSON，因此无法修复其 `sequence_number`；这是 chunk 级拦截的固有限制。
 
 ## 本地构建
 

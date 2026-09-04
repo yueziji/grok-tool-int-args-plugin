@@ -13,7 +13,12 @@ CLIProxyAPI (CPA) native plugin that rewrites whole-number JSON floats inside to
 - Fail-open: partial/invalid JSON is left unchanged
 - Keeps streaming: each chunk is rewritten independently; the stream is never buffered into a non-stream response
 - Skips incomplete `response.function_call_arguments.delta` events
-- Repairs missing Responses stream `sequence_number` fields with a per-stream monotonic counter; existing values are preserved
+- Repairs missing Responses stream `sequence_number` fields by deriving the next value from the host-delivered stream history; existing values are preserved
+- Can disable sequence repair with `repair_sequence_numbers: false`
+
+## Requirements
+
+- CPA host **v7.2.129 or newer** (RPC schema 3)
 
 ## Install
 
@@ -39,6 +44,7 @@ plugins:
       chat_completions: true
       responses: true
       include_custom_input: false
+      repair_sequence_numbers: true
 ```
 
 ## Configuration
@@ -49,7 +55,9 @@ This repository includes a CPA plugin registry at:
 
 `https://raw.githubusercontent.com/yueziji/grok-tool-int-args-plugin/main/registry.json`
 
-Add that URL as a custom plugin source in CPA. CPA will use the GitHub Releases of this repository to check for and install updates.
+Add that URL as a custom plugin source in CPA. CPA will use the GitHub Releases of this repository to check for and install updates. Release assets use the exact plugin-store naming format `grok-tool-int-args_<version>_<goos>_<goarch>.zip`; CPA verifies them with the accompanying `checksums.txt`.
+
+Supported platforms: `windows/amd64`, `linux/amd64`, `linux/arm64`, and `darwin/arm64`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -57,6 +65,7 @@ Add that URL as a custom plugin source in CPA. CPA will use the GitHub Releases 
 | `chat_completions` | bool | `true` | Rewrite Chat Completions tool arguments. |
 | `responses` | bool | `true` | Rewrite Responses / `openai-response` tool arguments. |
 | `include_custom_input` | bool | `false` | Also rewrite custom-tool `input` JSON fields. |
+| `repair_sequence_numbers` | bool | `true` | Fill missing `sequence_number` on Responses stream events from the delivered stream history. |
 
 `plugins.configs.<id>.enabled` is owned by CPA and controls whether the plugin is active.
 
@@ -68,9 +77,10 @@ This plugin does **not** convert streaming into non-streaming.
 - Standard SSE `data:` frames and bare JSON websocket chunks are both supported
 - Only complete argument payloads are rewritten (`function_call_arguments.done`, `output_item.done`, completed outputs, full chat tool_calls, etc.)
 - Incomplete argument deltas are skipped on purpose
-- Responses events missing `sequence_number` receive one in stream order; existing sequence numbers are preserved and used to advance the counter
+- Responses events missing `sequence_number` receive the next value derived from the host-provided delivered stream history; existing sequence numbers are preserved
 - Fragmented Chat Completions arguments are accumulated by response/tool ID; other chunk content continues downstream, and the complete arguments are emitted once valid JSON closes
 - If the upstream stream finishes before the buffered arguments close (aborted stream), the finishing chunk flushes whatever was withheld so no argument bytes are lost
+- If one JSON event is split across two upstream chunks, neither chunk is valid JSON at interception time, so its `sequence_number` cannot be repaired; this is an inherent limitation of chunk-level interception
 
 ## Build Locally
 
@@ -119,8 +129,8 @@ After:
 ## Compatibility
 
 - Built against `github.com/router-for-me/CLIProxyAPI/v7`
-- Uses CPA plugin ABI v1 / schema v1
-- Intended for CPA hosts that load native plugins from `plugins.dir`
+- Uses CPA plugin ABI v1 / RPC schema v3
+- Requires CPA hosts v7.2.129+ that load native plugins from `plugins.dir`
 
 ## License
 
