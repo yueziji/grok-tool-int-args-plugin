@@ -2,12 +2,10 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"gopkg.in/yaml.v3"
@@ -30,15 +28,18 @@ type pluginConfig struct {
 	Responses *bool
 	// IncludeCustomInput also rewrites custom tool "input" JSON fields.
 	IncludeCustomInput bool
+	// RepairSequenceNumbers fills missing Responses event sequence numbers.
+	RepairSequenceNumbers bool
 }
 
 func defaultPluginConfig() pluginConfig {
 	chat := true
 	responses := true
 	return pluginConfig{
-		Models:          []string{"grok", "xai"},
-		ChatCompletions: &chat,
-		Responses:       &responses,
+		Models:                []string{"grok", "xai"},
+		ChatCompletions:       &chat,
+		Responses:             &responses,
+		RepairSequenceNumbers: true,
 	}
 }
 
@@ -74,10 +75,11 @@ func decodeConfig(raw []byte) (pluginConfig, error) {
 	// Models decodes through a pointer so `models:` written as YAML null keeps
 	// the grok/xai default; only an explicit `models: []` opts into all models.
 	var decoded struct {
-		Models             *[]string `yaml:"models"`
-		ChatCompletions    *bool     `yaml:"chat_completions"`
-		Responses          *bool     `yaml:"responses"`
-		IncludeCustomInput bool      `yaml:"include_custom_input"`
+		Models                *[]string `yaml:"models"`
+		ChatCompletions       *bool     `yaml:"chat_completions"`
+		Responses             *bool     `yaml:"responses"`
+		IncludeCustomInput    bool      `yaml:"include_custom_input"`
+		RepairSequenceNumbers *bool     `yaml:"repair_sequence_numbers"`
 	}
 	if errUnmarshal := yaml.Unmarshal(raw, &decoded); errUnmarshal != nil {
 		return pluginConfig{}, errUnmarshal
@@ -93,6 +95,9 @@ func decodeConfig(raw []byte) (pluginConfig, error) {
 		cfg.Responses = decoded.Responses
 	}
 	cfg.IncludeCustomInput = decoded.IncludeCustomInput
+	if decoded.RepairSequenceNumbers != nil {
+		cfg.RepairSequenceNumbers = *decoded.RepairSequenceNumbers
+	}
 	return cfg, nil
 }
 
@@ -165,6 +170,15 @@ func shouldProcessSourceFormat(cfg pluginConfig, sourceFormat string) bool {
 	}
 }
 
+func isResponsesSourceFormat(sourceFormat string) bool {
+	switch normalizeSourceFormat(sourceFormat) {
+	case "openai-response", "responses":
+		return true
+	default:
+		return false
+	}
+}
+
 func normalizeSourceFormat(sourceFormat string) string {
 	return strings.ToLower(strings.TrimSpace(sourceFormat))
 }
@@ -224,13 +238,12 @@ func handleStreamChunkIntercept(raw []byte) ([]byte, error) {
 	if !shouldProcessRequest(cfg, req.SourceFormat, req.Model, req.RequestedModel) {
 		return okEnvelope(pluginapi.StreamChunkInterceptResponse{})
 	}
-	sequenceKey := streamSequenceKey(meta.HostCallbackID, req.OriginalRequest, req.Model, req.RequestedModel)
-	sequence := responsesSequenceFor(sequenceKey, time.Now())
-	fixed, ok := fixStreamChunkBodyWithSequence(req.Body, cfg.IncludeCustomInput, sequence)
-	storeResponsesSequence(sequenceKey, sequence, time.Now())
-	if isResponsesCompletionChunk(req.Body) {
-		clearResponsesSequence(sequenceKey)
+	var next *int
+	if cfg.RepairSequenceNumbers && isResponsesSourceFormat(req.SourceFormat) {
+		start := nextSequenceFromHistory(req.HistoryChunks, req.ChunkIndex)
+		next = &start
 	}
+	fixed, ok := fixStreamChunkBody(req.Body, cfg.IncludeCustomInput, next)
 	if !ok {
 		return okEnvelope(pluginapi.StreamChunkInterceptResponse{})
 	}
@@ -243,16 +256,44 @@ func handleStreamChunkIntercept(raw []byte) ([]byte, error) {
 	return okEnvelope(pluginapi.StreamChunkInterceptResponse{Body: fixed})
 }
 
-func streamSequenceKey(callbackID string, original []byte, model, requested string) string {
-	if callbackID != "" {
-		return "callback:" + callbackID
+func nextSequenceFromHistory(history [][]byte, chunkIndex int) int {
+	if chunkIndex <= 0 || len(history) == 0 {
+		return 0
 	}
-	hash := sha256.Sum256(append(append([]byte{}, original...), []byte(model+"\x00"+requested)...))
-	return "request:" + hex.EncodeToString(hash[:])
+	for chunkPosition := len(history) - 1; chunkPosition >= 0; chunkPosition-- {
+		chunk := history[chunkPosition]
+		trimmed := bytes.TrimSpace(chunk)
+		if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+			if sequence, ok := sequenceNumberFromPayload(trimmed); ok {
+				return sequence + 1
+			}
+		}
+		lines := bytes.Split(chunk, []byte{'\n'})
+		for linePosition := len(lines) - 1; linePosition >= 0; linePosition-- {
+			payload, ok := sseDataPayload(lines[linePosition])
+			if !ok {
+				continue
+			}
+			if sequence, ok := sequenceNumberFromPayload(payload); ok {
+				return sequence + 1
+			}
+		}
+	}
+	return 0
 }
 
-func isResponsesCompletionChunk(body []byte) bool {
-	return bytes.Contains(body, []byte(`"type":"response.completed"`)) || bytes.Contains(body, []byte(`"type":"error"`))
+func sequenceNumberFromPayload(payload []byte) (int, bool) {
+	var probe struct {
+		SequenceNumber *json.Number `json:"sequence_number"`
+	}
+	if errUnmarshal := json.Unmarshal(payload, &probe); errUnmarshal != nil || probe.SequenceNumber == nil {
+		return 0, false
+	}
+	sequence, errParse := strconv.Atoi(probe.SequenceNumber.String())
+	if errParse != nil {
+		return 0, false
+	}
+	return sequence, true
 }
 
 func isIncompleteFunctionCallArgumentsDelta(body []byte) bool {

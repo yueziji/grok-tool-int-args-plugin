@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"math/big"
-	"strconv"
 	"strings"
 )
 
@@ -38,17 +37,13 @@ func fixToolIntegerArgs(body []byte, includeCustomInput bool) ([]byte, bool) {
 // fixStreamChunkBody accepts both bare JSON websocket chunks and standard SSE
 // frames. For SSE, only JSON payloads on data: lines are rewritten; framing,
 // line endings, event names, comments, and terminal markers stay untouched.
-func fixStreamChunkBody(body []byte, includeCustomInput bool) ([]byte, bool) {
-	return fixStreamChunkBodyWithSequence(body, includeCustomInput, nil)
-}
-
-func fixStreamChunkBodyWithSequence(body []byte, includeCustomInput bool, sequence *responsesSequenceState) ([]byte, bool) {
+func fixStreamChunkBody(body []byte, includeCustomInput bool, next *int) ([]byte, bool) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
 		return body, false
 	}
 	if trimmed[0] == '{' || trimmed[0] == '[' {
-		return fixStreamJSONPayloadWithSequence(body, includeCustomInput, sequence)
+		return fixStreamJSONPayload(body, includeCustomInput, next)
 	}
 
 	lines := bytes.SplitAfter(body, []byte{'\n'})
@@ -56,7 +51,7 @@ func fixStreamChunkBodyWithSequence(body []byte, includeCustomInput bool, sequen
 	out.Grow(len(body))
 	changed := false
 	for _, line := range lines {
-		fixed, lineChanged := fixSSEDataLineWithSequence(line, includeCustomInput, sequence)
+		fixed, lineChanged := fixSSEDataLine(line, includeCustomInput, next)
 		out.Write(fixed)
 		changed = changed || lineChanged
 	}
@@ -66,11 +61,29 @@ func fixStreamChunkBodyWithSequence(body []byte, includeCustomInput bool, sequen
 	return out.Bytes(), true
 }
 
-func fixSSEDataLine(line []byte, includeCustomInput bool) ([]byte, bool) {
-	return fixSSEDataLineWithSequence(line, includeCustomInput, nil)
+func fixSSEDataLine(line []byte, includeCustomInput bool, next *int) ([]byte, bool) {
+	payload, valueStart, valueEnd, ok := parseSSEDataLine(line)
+	if !ok {
+		return line, false
+	}
+
+	fixed, changed := fixStreamJSONPayload(payload, includeCustomInput, next)
+	if !changed {
+		return line, false
+	}
+	out := make([]byte, 0, len(line)-len(payload)+len(fixed))
+	out = append(out, line[:valueStart]...)
+	out = append(out, fixed...)
+	out = append(out, line[valueEnd:]...)
+	return out, true
 }
 
-func fixSSEDataLineWithSequence(line []byte, includeCustomInput bool, sequence *responsesSequenceState) ([]byte, bool) {
+func sseDataPayload(line []byte) ([]byte, bool) {
+	payload, _, _, ok := parseSSEDataLine(line)
+	return payload, ok
+}
+
+func parseSSEDataLine(line []byte) ([]byte, int, int, bool) {
 	contentEnd := len(line)
 	if contentEnd > 0 && line[contentEnd-1] == '\n' {
 		contentEnd--
@@ -81,7 +94,7 @@ func fixSSEDataLineWithSequence(line []byte, includeCustomInput bool, sequence *
 	content := line[:contentEnd]
 	field := bytes.TrimLeft(content, " \t")
 	if !bytes.HasPrefix(field, []byte("data:")) {
-		return line, false
+		return nil, 0, 0, false
 	}
 
 	fieldOffset := len(content) - len(field)
@@ -95,31 +108,21 @@ func fixSSEDataLineWithSequence(line []byte, includeCustomInput bool, sequence *
 	}
 	payload := content[valueStart:valueEnd]
 	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
-		return line, false
+		return nil, 0, 0, false
 	}
-
-	fixed, changed := fixStreamJSONPayloadWithSequence(payload, includeCustomInput, sequence)
-	if !changed {
-		return line, false
-	}
-	out := make([]byte, 0, len(line)-len(payload)+len(fixed))
-	out = append(out, line[:valueStart]...)
-	out = append(out, fixed...)
-	out = append(out, line[valueEnd:]...)
-	return out, true
+	return payload, valueStart, valueEnd, true
 }
 
-func fixStreamJSONPayload(payload []byte, includeCustomInput bool) ([]byte, bool) {
-	return fixStreamJSONPayloadWithSequence(payload, includeCustomInput, nil)
-}
-
-func fixStreamJSONPayloadWithSequence(payload []byte, includeCustomInput bool, sequence *responsesSequenceState) ([]byte, bool) {
-	if !streamPayloadNeedsInspection(payload, includeCustomInput) {
-		if sequence == nil {
-			return payload, false
-		}
+func fixStreamJSONPayload(payload []byte, includeCustomInput bool, next *int) ([]byte, bool) {
+	sequenced, sequenceChanged := payload, false
+	if next != nil && !bytes.Contains(payload, []byte(`"sequence_number"`)) {
+		sequenced, sequenceChanged = fixResponsesSequenceNumber(payload, next)
+	} else if next != nil {
+		advanceSequenceFromExisting(payload, next)
 	}
-	sequenced, sequenceChanged := fixResponsesSequenceNumber(payload, sequence)
+	if !streamPayloadNeedsInspection(sequenced, includeCustomInput) {
+		return sequenced, sequenceChanged
+	}
 	if isIncompleteFunctionCallArgumentsDelta(sequenced) {
 		return sequenced, sequenceChanged
 	}
@@ -137,11 +140,20 @@ func fixStreamJSONPayloadWithSequence(payload []byte, includeCustomInput bool, s
 	return payload, false
 }
 
-// fixResponsesSequenceNumber adds the required sequence_number to a single
-// Responses event. Existing values are preserved and also advance the local
-// counter so mixed upstream streams remain monotonic.
-func fixResponsesSequenceNumber(payload []byte, state *responsesSequenceState) ([]byte, bool) {
-	if state == nil {
+// fixResponsesSequenceNumber adds a missing sequence_number to a typed JSON event.
+func fixResponsesSequenceNumber(payload []byte, next *int) ([]byte, bool) {
+	if next == nil {
+		return payload, false
+	}
+	var probe struct {
+		Type           string       `json:"type"`
+		SequenceNumber *json.Number `json:"sequence_number"`
+	}
+	if errUnmarshal := json.Unmarshal(payload, &probe); errUnmarshal != nil || probe.Type == "" {
+		return payload, false
+	}
+	if probe.SequenceNumber != nil {
+		advanceSequenceFromExisting(payload, next)
 		return payload, false
 	}
 	decoded, ok := decodeJSONValue(payload)
@@ -152,25 +164,25 @@ func fixResponsesSequenceNumber(payload []byte, state *responsesSequenceState) (
 	if !ok {
 		return payload, false
 	}
-	typeName, _ := root["type"].(string)
-	if !strings.HasPrefix(typeName, "response.") && typeName != "error" {
+	if _, exists := root["sequence_number"]; exists {
 		return payload, false
 	}
-	if value, exists := root["sequence_number"]; exists {
-		if number, ok := value.(json.Number); ok {
-			if parsed, err := strconv.Atoi(number.String()); err == nil && parsed >= state.next {
-				state.next = parsed + 1
-			}
-		}
-		return payload, false
-	}
-	root["sequence_number"] = state.next
-	state.next++
+	root["sequence_number"] = *next
+	*next = *next + 1
 	out, err := marshalJSONValue(root)
 	if err != nil {
 		return payload, false
 	}
 	return out, true
+}
+
+func advanceSequenceFromExisting(payload []byte, next *int) {
+	if next == nil {
+		return
+	}
+	if sequence, ok := sequenceNumberFromPayload(payload); ok && sequence >= *next {
+		*next = sequence + 1
+	}
 }
 
 // streamPayloadNeedsInspection is a cheap byte-level prefilter so plain text

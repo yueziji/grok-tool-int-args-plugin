@@ -49,10 +49,10 @@ type rpcHostLogRequest struct {
 func handleMethod(method string, request []byte) ([]byte, error) {
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
-			if errConfigure := configure(request); errConfigure != nil {
-				return nil, errConfigure
-			}
-			return okEnvelope(pluginRegistration())
+		if errConfigure := configure(request); errConfigure != nil {
+			return nil, errConfigure
+		}
+		return okEnvelope(pluginRegistration())
 	case pluginabi.MethodPluginQuiesce:
 		return okEnvelope(struct{}{})
 	case pluginabi.MethodResponseInterceptAfter:
@@ -77,6 +77,7 @@ func pluginRegistration() registration {
 				{Name: "chat_completions", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Rewrite Chat Completions tool arguments. Default: true."},
 				{Name: "responses", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Rewrite Responses / openai-response tool arguments. Default: true."},
 				{Name: "include_custom_input", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Also rewrite custom tool input JSON fields. Default: false."},
+				{Name: "repair_sequence_numbers", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Fill in missing sequence_number on Responses stream events using the delivered stream history. Default: true."},
 			},
 		},
 		Capabilities: registrationCapability{

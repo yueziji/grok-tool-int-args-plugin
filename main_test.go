@@ -320,7 +320,7 @@ func TestHandleStreamChunkDoneEvent(t *testing.T) {
 	if len(result.Body) == 0 {
 		t.Fatal("expected rewritten body")
 	}
-	assertArgumentsInt(t, sseDataPayload(t, result.Body), []string{"arguments"}, "timeout_ms", 23000)
+	assertArgumentsInt(t, mustSSEDataPayload(t, result.Body), []string{"arguments"}, "timeout_ms", 23000)
 }
 
 func TestUnknownSourceFormatIsSkipped(t *testing.T) {
