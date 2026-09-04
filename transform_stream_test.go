@@ -135,6 +135,36 @@ func TestFixStreamChunkBody_ResponsesSequenceNumbers(t *testing.T) {
 	if !changed || !strings.Contains(string(fixed), `"sequence_number":8`) {
 		t.Fatalf("sequence state was not advanced: %s", fixed)
 	}
+	stringSequence := []byte(`{"type":"response.completed","sequence_number":"9"}`)
+	if fixed, changed := fixStreamChunkBody(stringSequence, false, &next); changed || !bytes.Equal(fixed, stringSequence) {
+		t.Fatalf("string sequence should be preserved: %s", fixed)
+	}
+}
+
+func TestFixStreamChunkBody_NestedSequenceNumberDoesNotSuppressRepair(t *testing.T) {
+	next := 0
+	input := []byte(`{"type":"response.created","response":{"metadata":{"sequence_number":"business-value"}}}`)
+	fixed, changed := fixStreamChunkBody(input, false, &next)
+	if !changed {
+		t.Fatal("expected top-level sequence repair")
+	}
+	var event struct {
+		SequenceNumber int `json:"sequence_number"`
+		Response       struct {
+			Metadata struct {
+				SequenceNumber string `json:"sequence_number"`
+			} `json:"metadata"`
+		} `json:"response"`
+	}
+	if errUnmarshal := json.Unmarshal(fixed, &event); errUnmarshal != nil {
+		t.Fatal(errUnmarshal)
+	}
+	if event.SequenceNumber != 0 {
+		t.Fatalf("top-level sequence_number = %d, want 0", event.SequenceNumber)
+	}
+	if event.Response.Metadata.SequenceNumber != "business-value" {
+		t.Fatalf("nested sequence_number changed: %q", event.Response.Metadata.SequenceNumber)
+	}
 }
 
 func TestChatCompletionFragmentedArguments(t *testing.T) {

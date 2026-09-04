@@ -116,10 +116,8 @@ func parseSSEDataLine(line []byte) ([]byte, int, int, bool) {
 
 func fixStreamJSONPayload(payload []byte, includeCustomInput bool, next *int) ([]byte, bool) {
 	sequenced, sequenceChanged := payload, false
-	if next != nil && !bytes.Contains(payload, []byte(`"sequence_number"`)) {
+	if next != nil {
 		sequenced, sequenceChanged = fixResponsesSequenceNumber(payload, next)
-	} else if next != nil {
-		advanceSequenceFromExisting(payload, next)
 	}
 	if !streamPayloadNeedsInspection(sequenced, includeCustomInput) {
 		return sequenced, sequenceChanged
@@ -146,42 +144,38 @@ func fixResponsesSequenceNumber(payload []byte, next *int) ([]byte, bool) {
 	if next == nil {
 		return payload, false
 	}
-	decoded, ok := decodeJSONValue(payload)
+	var root map[string]json.RawMessage
+	if errDecode := json.Unmarshal(payload, &root); errDecode != nil {
+		return payload, false
+	}
+	rawType, ok := root["type"]
 	if !ok {
 		return payload, false
 	}
-	root, ok := decoded.(map[string]any)
-	if !ok {
+	var typeName string
+	if errType := json.Unmarshal(rawType, &typeName); errType != nil || typeName == "" {
 		return payload, false
 	}
-	typeName, ok := root["type"].(string)
-	if !ok || typeName == "" {
-		return payload, false
-	}
-	if value, exists := root["sequence_number"]; exists {
-		if number, ok := value.(json.Number); ok {
+	if rawSequence, exists := root["sequence_number"]; exists {
+		var number json.Number
+		if errNumber := json.Unmarshal(rawSequence, &number); errNumber == nil {
 			if parsed, errParse := strconv.Atoi(number.String()); errParse == nil && parsed >= *next {
 				*next = parsed + 1
 			}
 		}
 		return payload, false
 	}
-	root["sequence_number"] = *next
+	sequence, errMarshal := json.Marshal(*next)
+	if errMarshal != nil {
+		return payload, false
+	}
+	root["sequence_number"] = sequence
 	*next = *next + 1
 	out, err := marshalJSONValue(root)
 	if err != nil {
 		return payload, false
 	}
 	return out, true
-}
-
-func advanceSequenceFromExisting(payload []byte, next *int) {
-	if next == nil {
-		return
-	}
-	if sequence, ok := sequenceNumberFromPayload(payload); ok && sequence >= *next {
-		*next = sequence + 1
-	}
 }
 
 // streamPayloadNeedsInspection is a cheap byte-level prefilter so plain text
