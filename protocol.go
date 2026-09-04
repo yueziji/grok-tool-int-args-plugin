@@ -9,8 +9,13 @@ import (
 
 const pluginIdentifier = "grok-tool-int-args"
 
+// pluginSchemaVersion is the RPC contract this plugin speaks. Version 3 lets
+// the host omit OriginalRequest/RequestBody on payload stream chunks, which
+// this plugin never reads; hosts older than CPA v7.2.129 reject it.
+const pluginSchemaVersion uint32 = pluginabi.SchemaVersionStreamChunkOmitRequestBody
+
 // pluginVersion is overridden at build time with -ldflags "-X main.pluginVersion=...".
-var pluginVersion = "0.2.0-dev"
+var pluginVersion = "0.3.0-dev"
 
 type envelope struct {
 	OK     bool            `json:"ok"`
@@ -44,10 +49,12 @@ type rpcHostLogRequest struct {
 func handleMethod(method string, request []byte) ([]byte, error) {
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
-		if errConfigure := configure(request); errConfigure != nil {
-			return nil, errConfigure
-		}
-		return okEnvelope(pluginRegistration())
+			if errConfigure := configure(request); errConfigure != nil {
+				return nil, errConfigure
+			}
+			return okEnvelope(pluginRegistration())
+	case pluginabi.MethodPluginQuiesce:
+		return okEnvelope(struct{}{})
 	case pluginabi.MethodResponseInterceptAfter:
 		return handleResponseIntercept(request)
 	case pluginabi.MethodResponseInterceptStreamChunk:
@@ -59,7 +66,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 
 func pluginRegistration() registration {
 	return registration{
-		SchemaVersion: pluginabi.SchemaVersion,
+		SchemaVersion: pluginSchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             pluginIdentifier,
 			Version:          pluginVersion,

@@ -411,6 +411,13 @@ func TestRegistrationEnvelope(t *testing.T) {
 	if !env.OK {
 		t.Fatalf("register failed: %s", raw)
 	}
+	var registered registration
+	if errUnmarshal := json.Unmarshal(env.Result, &registered); errUnmarshal != nil {
+		t.Fatal(errUnmarshal)
+	}
+	if registered.SchemaVersion != pluginSchemaVersion {
+		t.Fatalf("schema_version = %d, want %d", registered.SchemaVersion, pluginSchemaVersion)
+	}
 	if !strings.Contains(string(env.Result), `"response_interceptor":true`) {
 		t.Fatalf("missing response interceptor capability: %s", env.Result)
 	}
