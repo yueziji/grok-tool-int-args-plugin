@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"math/big"
+	"strconv"
 	"strings"
 )
 
@@ -145,17 +146,6 @@ func fixResponsesSequenceNumber(payload []byte, next *int) ([]byte, bool) {
 	if next == nil {
 		return payload, false
 	}
-	var probe struct {
-		Type           string       `json:"type"`
-		SequenceNumber *json.Number `json:"sequence_number"`
-	}
-	if errUnmarshal := json.Unmarshal(payload, &probe); errUnmarshal != nil || probe.Type == "" {
-		return payload, false
-	}
-	if probe.SequenceNumber != nil {
-		advanceSequenceFromExisting(payload, next)
-		return payload, false
-	}
 	decoded, ok := decodeJSONValue(payload)
 	if !ok {
 		return payload, false
@@ -164,7 +154,16 @@ func fixResponsesSequenceNumber(payload []byte, next *int) ([]byte, bool) {
 	if !ok {
 		return payload, false
 	}
-	if _, exists := root["sequence_number"]; exists {
+	typeName, ok := root["type"].(string)
+	if !ok || typeName == "" {
+		return payload, false
+	}
+	if value, exists := root["sequence_number"]; exists {
+		if number, ok := value.(json.Number); ok {
+			if parsed, errParse := strconv.Atoi(number.String()); errParse == nil && parsed >= *next {
+				*next = parsed + 1
+			}
+		}
 		return payload, false
 	}
 	root["sequence_number"] = *next
