@@ -9,7 +9,7 @@ on:
       version:
         description: "Release version tag"
         required: true
-        default: "v0.1.0"
+        default: "v0.3.0"
 
 permissions:
   contents: write
@@ -39,6 +39,9 @@ jobs:
           CGO_ENABLED: "0"
         run: go test .
 
+      - name: Test with race detector
+        run: go test -race .
+
       - name: Vet
         run: go vet ./...
 
@@ -52,13 +55,24 @@ jobs:
         include:
           - os: windows-latest
             target: windows-amd64
+            goos: windows
+            goarch: amd64
             ext: dll
           - os: ubuntu-latest
             target: linux-amd64
+            goos: linux
+            goarch: amd64
             ext: so
           - os: macos-latest
             target: darwin-arm64
+            goos: darwin
+            goarch: arm64
             ext: dylib
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            goos: linux
+            goarch: arm64
+            ext: so
 
     steps:
       - name: Checkout
@@ -83,18 +97,15 @@ jobs:
       - name: Package plugin
         shell: pwsh
         run: |
-          $files = @("dist/${{ env.PLUGIN_NAME }}.${{ matrix.ext }}")
-          $header = "dist/${{ env.PLUGIN_NAME }}.h"
-          if (Test-Path -LiteralPath $header) {
-            $files += $header
-          }
-          Compress-Archive -Path $files -DestinationPath "dist/${{ env.PLUGIN_NAME }}-${{ matrix.target }}.zip" -Force
+          $version = "${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}".TrimStart("v")
+          $archive = "dist/${{ env.PLUGIN_NAME }}_${version}_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
+          Compress-Archive -Path "dist/${{ env.PLUGIN_NAME }}.${{ matrix.ext }}" -DestinationPath $archive -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-assets-${{ matrix.target }}
-          path: dist/${{ env.PLUGIN_NAME }}-${{ matrix.target }}.zip
+          path: dist/${{ env.PLUGIN_NAME }}_*.zip
           if-no-files-found: error
 
   release:
@@ -117,10 +128,20 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum *.zip | sort -k2 > checksums.txt
+          cat checksums.txt
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
           target_commitish: ${{ github.sha }}
-          files: release-assets/*.zip
+          files: |
+            release-assets/*.zip
+            release-assets/checksums.txt
           generate_release_notes: true

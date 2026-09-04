@@ -6,7 +6,7 @@
       "name": "Grok Tool Integer Args",
       "description": "Rewrites whole-number JSON floats in tool-call arguments and repairs missing Responses stream sequence numbers.",
       "author": "yueziji",
-      "version": "0.2.2",
+      "version": "0.3.0",
       "repository": "https://github.com/yueziji/grok-tool-int-args-plugin",
       "homepage": "https://github.com/yueziji/grok-tool-int-args-plugin",
       "license": "MIT",
