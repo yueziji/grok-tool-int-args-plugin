@@ -186,9 +186,11 @@ func advanceSequenceFromExisting(payload []byte, next *int) {
 }
 
 // streamPayloadNeedsInspection is a cheap byte-level prefilter so plain text
-// delta chunks skip the three JSON parses below. Withheld chat arguments force
-// full inspection: the finishing chunk that must flush them can lack every
-// marker (for example an empty delta with finish_reason "stop").
+// delta chunks skip full argument inspection. Responses sequence repair, when
+// enabled, performs its top-level sequence probe before this filter. Withheld
+// chat arguments force full inspection: the finishing chunk that must flush
+// them can lack every marker (for example an empty delta with finish_reason
+// "stop").
 func streamPayloadNeedsInspection(payload []byte, includeCustomInput bool) bool {
 	if hasWithheldChatArguments() {
 		return true

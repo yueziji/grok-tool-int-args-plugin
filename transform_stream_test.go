@@ -312,3 +312,12 @@ func TestOnlyToolArgumentFieldsAreRewritten(t *testing.T) {
 		t.Fatalf("tool arguments were not changed: %s", out)
 	}
 }
+
+func BenchmarkPlainTextDelta(b *testing.B) {
+	input := []byte(`{"type":"response.output_text.delta","sequence_number":7,"delta":"hello"}`)
+	b.ReportAllocs()
+	for index := 0; index < b.N; index++ {
+		next := 0
+		fixStreamChunkBody(input, false, &next)
+	}
+}
