@@ -25,6 +25,46 @@ type chatArgumentEntry struct {
 	updatedAt time.Time
 }
 
+type responsesSequenceState struct {
+	next      int
+	updatedAt time.Time
+}
+
+var responsesSequences = struct {
+	sync.Mutex
+	values map[string]responsesSequenceState
+}{values: make(map[string]responsesSequenceState)}
+
+func responsesSequenceFor(key string, now time.Time) *responsesSequenceState {
+	responsesSequences.Lock()
+	defer responsesSequences.Unlock()
+	for streamKey, state := range responsesSequences.values {
+		if now.Sub(state.updatedAt) > chatArgumentStateTTL {
+			delete(responsesSequences.values, streamKey)
+		}
+	}
+	state := responsesSequences.values[key]
+	state.updatedAt = now
+	responsesSequences.values[key] = state
+	return &state
+}
+
+func storeResponsesSequence(key string, state *responsesSequenceState, now time.Time) {
+	if state == nil || key == "" {
+		return
+	}
+	state.updatedAt = now
+	responsesSequences.Lock()
+	responsesSequences.values[key] = *state
+	responsesSequences.Unlock()
+}
+
+func clearResponsesSequence(key string) {
+	responsesSequences.Lock()
+	delete(responsesSequences.values, key)
+	responsesSequences.Unlock()
+}
+
 var chatArgumentStreams = struct {
 	sync.Mutex
 	values map[chatArgumentKey]chatArgumentEntry

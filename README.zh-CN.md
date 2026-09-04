@@ -13,6 +13,7 @@ CLIProxyAPI（CPA）原生插件：把工具调用 `arguments` 里的整数值�
 - 失败放行：半截/非法 JSON 原样返回
 - **保持流式**：逐 chunk 处理，不会把流缓冲成非流式
 - 跳过不完整的 `response.function_call_arguments.delta`
+- Responses 流式事件缺少 `sequence_number` 时会按流内顺序补齐，已有值保持不变
 
 ## 安装
 
@@ -38,6 +39,14 @@ plugins:
 
 ## 配置
 
+### CPA 插件源
+
+仓库内置了可供 CPA 使用的插件源文件：
+
+`https://raw.githubusercontent.com/yueziji/grok-tool-int-args-plugin/main/registry.json`
+
+把这个 URL 添加到 CPA 的自定义插件源后，CPA 会根据本仓库的 GitHub Release 检查和安装更新。
+
 | 字段 | 类型 | 默认 | 说明 |
 |------|------|------|------|
 | `models` | 数组 | `["grok", "xai"]` | 大小写不敏感的模型规则,只在名称开头或分隔符(`-`、`_`、`.`、`/`、`:`、`@`)之后匹配:`xai` 能命中 `xai-beta`、`openrouter/x-ai/grok-4`,不会误伤 `pixai-diffusion`。显式空数组(`models: []`)匹配全部模型;键存在但值为空(`models:` 后面不写)保持默认值 |
@@ -47,7 +56,7 @@ plugins:
 
 ## 流式说明
 
-不会把流式变成非流式。插件同时支持标准 SSE `data:` 帧和 WebSocket 裸 JSON chunk。Responses 的不完整 delta 会原样跳过；Chat Completions 的跨 chunk 参数按响应/工具 ID 暂存，其他内容继续下发，并在参数组成完整 JSON 后一次性下发修复后的参数。若上游流在参数闭合前就结束（异常中断），收尾 chunk 会把暂存的参数原样冲刷下发，不会丢失。
+不会把流式变成非流式。插件同时支持标准 SSE `data:` 帧和 WebSocket 裸 JSON chunk。Responses 事件缺少 `sequence_number` 时会按流内顺序补齐，已有序号会保留；Responses 的不完整 delta 仍会跳过参数修复。Chat Completions 的跨 chunk 参数按响应/工具 ID 暂存，其他内容继续下发，并在参数组成完整 JSON 后一次性下发修复后的参数。若上游流在参数闭合前就结束（异常中断），收尾 chunk 会把暂存的参数原样冲刷下发，不会丢失。
 
 ## 本地构建
 

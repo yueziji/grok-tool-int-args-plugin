@@ -13,6 +13,7 @@ CLIProxyAPI (CPA) native plugin that rewrites whole-number JSON floats inside to
 - Fail-open: partial/invalid JSON is left unchanged
 - Keeps streaming: each chunk is rewritten independently; the stream is never buffered into a non-stream response
 - Skips incomplete `response.function_call_arguments.delta` events
+- Repairs missing Responses stream `sequence_number` fields with a per-stream monotonic counter; existing values are preserved
 
 ## Install
 
@@ -42,6 +43,14 @@ plugins:
 
 ## Configuration
 
+### CPA Plugin Store
+
+This repository includes a CPA plugin registry at:
+
+`https://raw.githubusercontent.com/yueziji/grok-tool-int-args-plugin/main/registry.json`
+
+Add that URL as a custom plugin source in CPA. CPA will use the GitHub Releases of this repository to check for and install updates.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `models` | array | `["grok", "xai"]` | Case-insensitive rules matched against `Model` / `RequestedModel` at the start of the name or right after a separator (`-`, `_`, `.`, `/`, `:`, `@`). `xai` matches `xai-beta` and `openrouter/x-ai/grok-4` but not `pixai-diffusion`. An explicit empty list (`models: []`) matches all models; a null value (`models:` with nothing after it) keeps the default. |
@@ -59,6 +68,7 @@ This plugin does **not** convert streaming into non-streaming.
 - Standard SSE `data:` frames and bare JSON websocket chunks are both supported
 - Only complete argument payloads are rewritten (`function_call_arguments.done`, `output_item.done`, completed outputs, full chat tool_calls, etc.)
 - Incomplete argument deltas are skipped on purpose
+- Responses events missing `sequence_number` receive one in stream order; existing sequence numbers are preserved and used to advance the counter
 - Fragmented Chat Completions arguments are accumulated by response/tool ID; other chunk content continues downstream, and the complete arguments are emitted once valid JSON closes
 - If the upstream stream finishes before the buffered arguments close (aborted stream), the finishing chunk flushes whatever was withheld so no argument bytes are lost
 

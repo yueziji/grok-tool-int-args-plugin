@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"gopkg.in/yaml.v3"
@@ -220,7 +224,13 @@ func handleStreamChunkIntercept(raw []byte) ([]byte, error) {
 	if !shouldProcessRequest(cfg, req.SourceFormat, req.Model, req.RequestedModel) {
 		return okEnvelope(pluginapi.StreamChunkInterceptResponse{})
 	}
-	fixed, ok := fixStreamChunkBody(req.Body, cfg.IncludeCustomInput)
+	sequenceKey := streamSequenceKey(meta.HostCallbackID, req.OriginalRequest, req.Model, req.RequestedModel)
+	sequence := responsesSequenceFor(sequenceKey, time.Now())
+	fixed, ok := fixStreamChunkBodyWithSequence(req.Body, cfg.IncludeCustomInput, sequence)
+	storeResponsesSequence(sequenceKey, sequence, time.Now())
+	if isResponsesCompletionChunk(req.Body) {
+		clearResponsesSequence(sequenceKey)
+	}
 	if !ok {
 		return okEnvelope(pluginapi.StreamChunkInterceptResponse{})
 	}
@@ -231,6 +241,18 @@ func handleStreamChunkIntercept(raw []byte) ([]byte, error) {
 		"chunk_index":     req.ChunkIndex,
 	})
 	return okEnvelope(pluginapi.StreamChunkInterceptResponse{Body: fixed})
+}
+
+func streamSequenceKey(callbackID string, original []byte, model, requested string) string {
+	if callbackID != "" {
+		return "callback:" + callbackID
+	}
+	hash := sha256.Sum256(append(append([]byte{}, original...), []byte(model+"\x00"+requested)...))
+	return "request:" + hex.EncodeToString(hash[:])
+}
+
+func isResponsesCompletionChunk(body []byte) bool {
+	return bytes.Contains(body, []byte(`"type":"response.completed"`)) || bytes.Contains(body, []byte(`"type":"error"`))
 }
 
 func isIncompleteFunctionCallArgumentsDelta(body []byte) bool {

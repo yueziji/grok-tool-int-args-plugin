@@ -113,6 +113,30 @@ func TestFixStreamChunkBody_BareJSON(t *testing.T) {
 	assertArgumentsInt(t, out, []string{"arguments"}, "n", 9)
 }
 
+func TestFixStreamChunkBody_ResponsesSequenceNumbers(t *testing.T) {
+	state := &responsesSequenceState{}
+	input := []byte("data: {\"type\":\"response.created\"}\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n")
+	out, ok := fixStreamChunkBodyWithSequence(input, false, state)
+	if !ok {
+		t.Fatal("expected sequence repair")
+	}
+	if !strings.Contains(string(out), `"type":"response.created"`) || !strings.Contains(string(out), `"sequence_number":0`) ||
+		!strings.Contains(string(out), `"type":"response.output_text.delta"`) || !strings.Contains(string(out), `"sequence_number":1`) {
+		t.Fatalf("unexpected sequence numbers: %s", out)
+	}
+
+	existing := []byte(`{"type":"response.completed","sequence_number":7}`)
+	if fixed, changed := fixStreamChunkBodyWithSequence(existing, false, state); changed || !bytes.Equal(fixed, existing) {
+		t.Fatalf("existing sequence should be preserved: %s", fixed)
+	}
+	missing := []byte(`{"type":"response.completed"}`)
+	fixed, changed := fixStreamChunkBodyWithSequence(missing, false, state)
+	if !changed || !strings.Contains(string(fixed), `"sequence_number":8`) {
+		t.Fatalf("sequence state was not advanced: %s", fixed)
+	}
+}
+
 func TestChatCompletionFragmentedArguments(t *testing.T) {
 	resetChatArgumentStreams()
 	t.Cleanup(resetChatArgumentStreams)

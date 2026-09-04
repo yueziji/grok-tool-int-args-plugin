@@ -293,8 +293,11 @@ func TestHandleStreamChunkSkipsDelta(t *testing.T) {
 	}
 	var result pluginapi.StreamChunkInterceptResponse
 	decodeEnvelopeResult(t, respRaw, &result)
-	if len(result.Body) != 0 {
-		t.Fatalf("delta should not rewrite body, got %s", result.Body)
+	if len(result.Body) == 0 {
+		t.Fatal("delta should receive sequence_number repair")
+	}
+	if !strings.Contains(string(result.Body), `"sequence_number":0`) {
+		t.Fatalf("delta sequence_number missing: %s", result.Body)
 	}
 }
 
