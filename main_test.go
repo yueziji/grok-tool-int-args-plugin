@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -277,7 +278,7 @@ func TestHandleResponseIntercept(t *testing.T) {
 	assertArgumentsInt(t, result.Body, []string{"item", "arguments"}, "timeout_ms", 23000)
 }
 
-func TestHandleStreamChunkSkipsDelta(t *testing.T) {
+func TestHandleStreamChunkDeltaOnlyGetsSequenceNumber(t *testing.T) {
 	currentConfig.Store(defaultPluginConfig())
 	body := []byte(`data: {"type":"response.function_call_arguments.delta","delta":"{\"timeout_ms\":23000.0}"}`)
 	req := pluginapi.StreamChunkInterceptRequest{
@@ -285,7 +286,7 @@ func TestHandleStreamChunkSkipsDelta(t *testing.T) {
 		Model:          "grok-4",
 		RequestedModel: "grok-4",
 		Body:           body,
-		ChunkIndex:     1,
+		ChunkIndex:     0,
 	}
 	respRaw, errHandle := handleStreamChunkIntercept(mustMarshal(t, req))
 	if errHandle != nil {
@@ -298,6 +299,126 @@ func TestHandleStreamChunkSkipsDelta(t *testing.T) {
 	}
 	if !strings.Contains(string(result.Body), `"sequence_number":0`) {
 		t.Fatalf("delta sequence_number missing: %s", result.Body)
+	}
+	if !strings.Contains(string(result.Body), `"delta":"{\"timeout_ms\":23000.0}"`) {
+		t.Fatalf("delta argument was changed: %s", result.Body)
+	}
+}
+
+func TestHandleStreamChunkSequenceWithPerChunkCallbackIDs(t *testing.T) {
+	currentConfig.Store(defaultPluginConfig())
+	t.Cleanup(func() { currentConfig.Store(defaultPluginConfig()) })
+
+	bodies := [][]byte{
+		[]byte(`data: {"type":"response.created"}`),
+		[]byte(`data: {"type":"response.output_text.delta","delta":"one"}`),
+		[]byte(`data: {"type":"response.output_text.delta","delta":"two"}`),
+		[]byte(`data: {"type":"response.completed"}`),
+	}
+	callbackIDs := []string{"callback-a", "callback-b", "callback-c", "callback-d"}
+	var history [][]byte
+	for index, body := range bodies {
+		req := map[string]any{
+			"SourceFormat":     "openai-response",
+			"Model":            "grok-4",
+			"RequestedModel":   "grok-4",
+			"Body":             body,
+			"HistoryChunks":    history,
+			"ChunkIndex":       index,
+			"host_callback_id": callbackIDs[index],
+		}
+		respRaw, errHandle := handleStreamChunkIntercept(mustMarshal(t, req))
+		if errHandle != nil {
+			t.Fatal(errHandle)
+		}
+		var result pluginapi.StreamChunkInterceptResponse
+		decodeEnvelopeResult(t, respRaw, &result)
+		if len(result.Body) == 0 {
+			t.Fatalf("chunk %d should receive sequence_number repair", index)
+		}
+		var event struct {
+			SequenceNumber int `json:"sequence_number"`
+		}
+		if errUnmarshal := json.Unmarshal(mustSSEDataPayload(t, result.Body), &event); errUnmarshal != nil {
+			t.Fatal(errUnmarshal)
+		}
+		if event.SequenceNumber != index {
+			t.Fatalf("chunk %d sequence_number = %d, want %d", index, event.SequenceNumber, index)
+		}
+		history = append(history, append([]byte(nil), result.Body...))
+	}
+}
+
+func TestNextSequenceFromHistory(t *testing.T) {
+	cases := []struct {
+		name       string
+		history    [][]byte
+		chunkIndex int
+		want       int
+	}{
+		{name: "empty history", chunkIndex: 1, want: 0},
+		{name: "first chunk ignores history", history: [][]byte{[]byte(`data: {"type":"response.created","sequence_number":7}`)}, chunkIndex: 0, want: 0},
+		{name: "last event sequence", history: [][]byte{[]byte(`data: {"type":"response.created","sequence_number":7}`)}, chunkIndex: 1, want: 8},
+		{name: "skips last event without sequence", history: [][]byte{
+			[]byte(`data: {"type":"response.created","sequence_number":5}`),
+			[]byte(`data: {"type":"response.output_text.delta","delta":"text"}`),
+		}, chunkIndex: 2, want: 6},
+		{name: "CRLF and event line", history: [][]byte{[]byte("event: response.created\r\ndata: {\"type\":\"response.created\",\"sequence_number\":11}\r\n\r\n")}, chunkIndex: 1, want: 12},
+		{name: "bare websocket JSON", history: [][]byte{[]byte(`{"type":"response.created","sequence_number":12}`)}, chunkIndex: 1, want: 13},
+		{name: "last frame in chunk", history: [][]byte{[]byte("data: {\"type\":\"response.created\",\"sequence_number\":2}\n" + "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":7}\n")}, chunkIndex: 1, want: 8},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := nextSequenceFromHistory(testCase.history, testCase.chunkIndex); got != testCase.want {
+				t.Fatalf("nextSequenceFromHistory() = %d, want %d", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestChatCompletionsStreamNeverGetsSequenceNumber(t *testing.T) {
+	currentConfig.Store(defaultPluginConfig())
+	req := pluginapi.StreamChunkInterceptRequest{
+		SourceFormat: "openai",
+		Model:        "grok-4",
+		Body:         []byte(`data: {"type":"response.output_text.delta","delta":"hello"}`),
+		ChunkIndex:   0,
+	}
+	respRaw, errHandle := handleStreamChunkIntercept(mustMarshal(t, req))
+	if errHandle != nil {
+		t.Fatal(errHandle)
+	}
+	var result pluginapi.StreamChunkInterceptResponse
+	decodeEnvelopeResult(t, respRaw, &result)
+	if len(result.Body) != 0 {
+		t.Fatalf("Chat Completions stream should not be rewritten: %s", result.Body)
+	}
+}
+
+func TestRepairSequenceNumbersDisabled(t *testing.T) {
+	cfg, errDecode := decodeConfig([]byte("repair_sequence_numbers: false\n"))
+	if errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	if cfg.RepairSequenceNumbers {
+		t.Fatal("repair_sequence_numbers should decode false")
+	}
+	currentConfig.Store(cfg)
+	t.Cleanup(func() { currentConfig.Store(defaultPluginConfig()) })
+	req := pluginapi.StreamChunkInterceptRequest{
+		SourceFormat: "openai-response",
+		Model:        "grok-4",
+		Body:         []byte(`data: {"type":"response.created"}`),
+		ChunkIndex:   0,
+	}
+	respRaw, errHandle := handleStreamChunkIntercept(mustMarshal(t, req))
+	if errHandle != nil {
+		t.Fatal(errHandle)
+	}
+	var result pluginapi.StreamChunkInterceptResponse
+	decodeEnvelopeResult(t, respRaw, &result)
+	if len(result.Body) != 0 {
+		t.Fatalf("disabled sequence repair changed body: %s", result.Body)
 	}
 }
 
@@ -341,7 +462,7 @@ func TestDecodeConfigDefaults(t *testing.T) {
 	if !cfg.IncludeCustomInput {
 		t.Fatal("include_custom_input should be true")
 	}
-	if !boolOrDefault(cfg.ChatCompletions, false) || !boolOrDefault(cfg.Responses, false) {
+	if !boolOrDefault(cfg.ChatCompletions, false) || !boolOrDefault(cfg.Responses, false) || !cfg.RepairSequenceNumbers {
 		t.Fatal("booleans should default true when omitted")
 	}
 }
@@ -423,5 +544,23 @@ func TestRegistrationEnvelope(t *testing.T) {
 	}
 	if !strings.Contains(string(env.Result), `"response_stream_interceptor":true`) {
 		t.Fatalf("missing stream interceptor capability: %s", env.Result)
+	}
+}
+
+func TestHandleMethodQuiesce(t *testing.T) {
+	raw, errHandle := handleMethod(pluginabi.MethodPluginQuiesce, nil)
+	if errHandle != nil {
+		t.Fatal(errHandle)
+	}
+	var env envelope
+	if errUnmarshal := json.Unmarshal(raw, &env); errUnmarshal != nil {
+		t.Fatal(errUnmarshal)
+	}
+	if !env.OK {
+		t.Fatalf("quiesce failed: %s", raw)
+	}
+	var result struct{}
+	if errUnmarshal := json.Unmarshal(env.Result, &result); errUnmarshal != nil {
+		t.Fatal(errUnmarshal)
 	}
 }
