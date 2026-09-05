@@ -241,9 +241,15 @@ func handleStreamChunkIntercept(raw []byte) ([]byte, error) {
 	var next *int
 	if cfg.RepairSequenceNumbers && isResponsesSourceFormat(req.SourceFormat) {
 		start := nextSequenceFromHistory(req.HistoryChunks, req.ChunkIndex)
+		if start == 0 && req.ChunkIndex > 0 {
+			start = responseSequenceFallback(req.RequestID)
+		}
 		next = &start
 	}
-	fixed, ok := fixStreamChunkBody(req.Body, cfg.IncludeCustomInput, next)
+	fixed, ok := fixStreamChunkBody(req.Body, cfg.IncludeCustomInput, next, req.RequestID)
+	if next != nil {
+		storeResponseSequence(req.RequestID, *next)
+	}
 	if !ok {
 		return okEnvelope(pluginapi.StreamChunkInterceptResponse{})
 	}
@@ -254,6 +260,15 @@ func handleStreamChunkIntercept(raw []byte) ([]byte, error) {
 		"chunk_index":     req.ChunkIndex,
 	})
 	return okEnvelope(pluginapi.StreamChunkInterceptResponse{Body: fixed})
+}
+
+func handleRequestComplete(raw []byte) ([]byte, error) {
+	var completion pluginapi.RequestCompletion
+	if errUnmarshal := json.Unmarshal(raw, &completion); errUnmarshal != nil {
+		return nil, errUnmarshal
+	}
+	clearRequestStreamState(completion.RequestID)
+	return okEnvelope(struct{}{})
 }
 
 func nextSequenceFromHistory(history [][]byte, chunkIndex int) int {

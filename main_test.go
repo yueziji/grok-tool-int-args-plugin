@@ -545,6 +545,9 @@ func TestRegistrationEnvelope(t *testing.T) {
 	if !strings.Contains(string(env.Result), `"response_stream_interceptor":true`) {
 		t.Fatalf("missing stream interceptor capability: %s", env.Result)
 	}
+	if !registered.Capabilities.RequestLifecyclePlugin {
+		t.Fatal("request lifecycle notifications are required to release stream state")
+	}
 }
 
 func TestHandleMethodQuiesce(t *testing.T) {

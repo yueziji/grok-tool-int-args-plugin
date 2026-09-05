@@ -15,7 +15,7 @@ const pluginIdentifier = "grok-tool-int-args"
 const pluginSchemaVersion uint32 = pluginabi.SchemaVersionStreamChunkOmitRequestBody
 
 // pluginVersion is overridden at build time with -ldflags "-X main.pluginVersion=...".
-var pluginVersion = "0.3.0-dev"
+var pluginVersion = "0.3.2"
 
 type envelope struct {
 	OK     bool            `json:"ok"`
@@ -35,6 +35,7 @@ type registration struct {
 }
 
 type registrationCapability struct {
+	RequestLifecyclePlugin bool `json:"request_lifecycle_plugin"`
 	ResponseInterceptor    bool `json:"response_interceptor"`
 	StreamChunkInterceptor bool `json:"response_stream_interceptor"`
 }
@@ -55,6 +56,8 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return okEnvelope(pluginRegistration())
 	case pluginabi.MethodPluginQuiesce:
 		return okEnvelope(struct{}{})
+	case pluginabi.MethodRequestComplete:
+		return handleRequestComplete(request)
 	case pluginabi.MethodResponseInterceptAfter:
 		return handleResponseIntercept(request)
 	case pluginabi.MethodResponseInterceptStreamChunk:
@@ -77,10 +80,11 @@ func pluginRegistration() registration {
 				{Name: "chat_completions", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Rewrite Chat Completions tool arguments. Default: true."},
 				{Name: "responses", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Rewrite Responses / openai-response tool arguments. Default: true."},
 				{Name: "include_custom_input", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Also rewrite custom tool input JSON fields. Default: false."},
-				{Name: "repair_sequence_numbers", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Fill in missing sequence_number on Responses stream events using the delivered stream history. Default: true."},
+				{Name: "repair_sequence_numbers", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Fill in missing sequence_number on Responses stream events using delivered history and a per-request fallback when history is evicted. Default: true."},
 			},
 		},
 		Capabilities: registrationCapability{
+			RequestLifecyclePlugin: true,
 			ResponseInterceptor:    true,
 			StreamChunkInterceptor: true,
 		},

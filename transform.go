@@ -38,13 +38,13 @@ func fixToolIntegerArgs(body []byte, includeCustomInput bool) ([]byte, bool) {
 // fixStreamChunkBody accepts both bare JSON websocket chunks and standard SSE
 // frames. For SSE, only JSON payloads on data: lines are rewritten; framing,
 // line endings, event names, comments, and terminal markers stay untouched.
-func fixStreamChunkBody(body []byte, includeCustomInput bool, next *int) ([]byte, bool) {
+func fixStreamChunkBody(body []byte, includeCustomInput bool, next *int, requestID string) ([]byte, bool) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
 		return body, false
 	}
 	if trimmed[0] == '{' || trimmed[0] == '[' {
-		return fixStreamJSONPayload(body, includeCustomInput, next)
+		return fixStreamJSONPayload(body, includeCustomInput, next, requestID)
 	}
 
 	lines := bytes.SplitAfter(body, []byte{'\n'})
@@ -52,7 +52,7 @@ func fixStreamChunkBody(body []byte, includeCustomInput bool, next *int) ([]byte
 	out.Grow(len(body))
 	changed := false
 	for _, line := range lines {
-		fixed, lineChanged := fixSSEDataLine(line, includeCustomInput, next)
+		fixed, lineChanged := fixSSEDataLine(line, includeCustomInput, next, requestID)
 		out.Write(fixed)
 		changed = changed || lineChanged
 	}
@@ -62,13 +62,13 @@ func fixStreamChunkBody(body []byte, includeCustomInput bool, next *int) ([]byte
 	return out.Bytes(), true
 }
 
-func fixSSEDataLine(line []byte, includeCustomInput bool, next *int) ([]byte, bool) {
+func fixSSEDataLine(line []byte, includeCustomInput bool, next *int, requestID string) ([]byte, bool) {
 	payload, valueStart, valueEnd, ok := parseSSEDataLine(line)
 	if !ok {
 		return line, false
 	}
 
-	fixed, changed := fixStreamJSONPayload(payload, includeCustomInput, next)
+	fixed, changed := fixStreamJSONPayload(payload, includeCustomInput, next, requestID)
 	if !changed {
 		return line, false
 	}
@@ -114,7 +114,7 @@ func parseSSEDataLine(line []byte) ([]byte, int, int, bool) {
 	return payload, valueStart, valueEnd, true
 }
 
-func fixStreamJSONPayload(payload []byte, includeCustomInput bool, next *int) ([]byte, bool) {
+func fixStreamJSONPayload(payload []byte, includeCustomInput bool, next *int, requestID string) ([]byte, bool) {
 	sequenced, sequenceChanged := payload, false
 	if next != nil {
 		sequenced, sequenceChanged = fixResponsesSequenceNumber(payload, next)
@@ -125,13 +125,12 @@ func fixStreamJSONPayload(payload []byte, includeCustomInput bool, next *int) ([
 	if isIncompleteFunctionCallArgumentsDelta(sequenced) {
 		return sequenced, sequenceChanged
 	}
-	candidate, chatChanged := rewriteChatCompletionArgumentFragments(sequenced)
-	fixed, argsChanged := fixToolIntegerArgs(candidate, includeCustomInput)
+	if candidate, chatChanged, isChat := rewriteChatCompletionArgumentFragments(sequenced, requestID); isChat {
+		return candidate, chatChanged || sequenceChanged
+	}
+	fixed, argsChanged := fixToolIntegerArgs(sequenced, includeCustomInput)
 	if argsChanged {
 		return fixed, true
-	}
-	if chatChanged {
-		return candidate, true
 	}
 	if sequenceChanged {
 		return sequenced, true
@@ -180,12 +179,11 @@ func fixResponsesSequenceNumber(payload []byte, next *int) ([]byte, bool) {
 
 // streamPayloadNeedsInspection is a cheap byte-level prefilter so plain text
 // delta chunks skip full argument inspection. Responses sequence repair, when
-// enabled, performs its top-level sequence probe before this filter. Withheld
-// chat arguments force full inspection: the finishing chunk that must flush
-// them can lack every marker (for example an empty delta with finish_reason
-// "stop").
+// enabled, performs its top-level sequence probe before this filter. Buffered
+// or passthrough chat arguments force full inspection so finishing chunks can
+// flush pending bytes and clear state even with an empty delta.
 func streamPayloadNeedsInspection(payload []byte, includeCustomInput bool) bool {
-	if hasWithheldChatArguments() {
+	if hasChatArgumentState() {
 		return true
 	}
 	if bytes.Contains(payload, []byte(`"arguments"`)) || bytes.Contains(payload, []byte(`"tool_calls"`)) {
@@ -229,7 +227,7 @@ func walkAndFixToolArgs(node any, includeCustomInput bool) bool {
 				changed = true
 			}
 		}
-		if includeCustomInput && nodeType == "custom_tool_call" {
+		if includeCustomInput && (nodeType == "custom_tool_call" || nodeType == "response.custom_tool_call_input.done") {
 			if fixed, ok := fixArgumentsField(value["input"]); ok {
 				value["input"] = fixed
 				changed = true

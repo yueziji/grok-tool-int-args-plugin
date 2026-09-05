@@ -39,7 +39,7 @@ func chatChunkArguments(t *testing.T, chunk []byte) string {
 
 func TestFixStreamChunkBody_SingleDataLine(t *testing.T) {
 	input := []byte(`data: {"type":"response.output_item.done","item":{"type":"function_call","arguments":"{\"timeout_ms\":23000.0}"}}`)
-	out, ok := fixStreamChunkBody(input, false, nil)
+	out, ok := fixStreamChunkBody(input, false, nil, "")
 	if !ok {
 		t.Fatal("expected SSE payload rewrite")
 	}
@@ -52,7 +52,7 @@ func TestFixStreamChunkBody_SingleDataLine(t *testing.T) {
 func TestFixStreamChunkBody_EventFramePreserved(t *testing.T) {
 	input := []byte("event: response.output_item.done\n" +
 		`data: {"type":"response.output_item.done","item":{"type":"function_call","arguments":"{\"timeout_ms\":23000.0}"}}` + "\n\n")
-	out, ok := fixStreamChunkBody(input, false, nil)
+	out, ok := fixStreamChunkBody(input, false, nil, "")
 	if !ok {
 		t.Fatal("expected framed SSE payload rewrite")
 	}
@@ -68,7 +68,7 @@ func TestFixStreamChunkBody_TerminalAndDeltaUnchanged(t *testing.T) {
 		[]byte(`data: {"type":"response.function_call_arguments.delta","delta":"{\"timeout_ms\":23000.0}"}`),
 	}
 	for _, input := range cases {
-		out, ok := fixStreamChunkBody(input, false, nil)
+		out, ok := fixStreamChunkBody(input, false, nil, "")
 		if ok || !bytes.Equal(out, input) {
 			t.Fatalf("chunk should be unchanged: in=%q out=%q ok=%v", input, out, ok)
 		}
@@ -77,7 +77,7 @@ func TestFixStreamChunkBody_TerminalAndDeltaUnchanged(t *testing.T) {
 
 func TestFixStreamChunkBody_PreservesPrefixAndCRLF(t *testing.T) {
 	input := []byte("event: response.output_item.done\r\ndata:{\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"arguments\":\"{\\\"n\\\":5.0}\"}}\r\n\r\n")
-	out, ok := fixStreamChunkBody(input, false, nil)
+	out, ok := fixStreamChunkBody(input, false, nil, "")
 	if !ok {
 		t.Fatal("expected rewrite")
 	}
@@ -92,7 +92,7 @@ func TestFixStreamChunkBody_MultipleFrames(t *testing.T) {
 		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n" +
 		"event: response.output_item.done\n" +
 		"data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"arguments\":\"{\\\"n\\\":8.0}\"}}\n\n")
-	out, ok := fixStreamChunkBody(input, false, nil)
+	out, ok := fixStreamChunkBody(input, false, nil, "")
 	if !ok {
 		t.Fatal("expected one frame to change")
 	}
@@ -106,7 +106,7 @@ func TestFixStreamChunkBody_MultipleFrames(t *testing.T) {
 
 func TestFixStreamChunkBody_BareJSON(t *testing.T) {
 	input := []byte(`{"type":"response.function_call_arguments.done","arguments":"{\"n\":9.0}"}`)
-	out, ok := fixStreamChunkBody(input, false, nil)
+	out, ok := fixStreamChunkBody(input, false, nil, "")
 	if !ok {
 		t.Fatal("expected websocket JSON rewrite")
 	}
@@ -117,7 +117,7 @@ func TestFixStreamChunkBody_ResponsesSequenceNumbers(t *testing.T) {
 	next := 0
 	input := []byte("data: {\"type\":\"response.created\"}\n" +
 		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n")
-	out, ok := fixStreamChunkBody(input, false, &next)
+	out, ok := fixStreamChunkBody(input, false, &next, "")
 	if !ok {
 		t.Fatal("expected sequence repair")
 	}
@@ -127,16 +127,16 @@ func TestFixStreamChunkBody_ResponsesSequenceNumbers(t *testing.T) {
 	}
 
 	existing := []byte(`{"type":"response.completed","sequence_number":7}`)
-	if fixed, changed := fixStreamChunkBody(existing, false, &next); changed || !bytes.Equal(fixed, existing) {
+	if fixed, changed := fixStreamChunkBody(existing, false, &next, ""); changed || !bytes.Equal(fixed, existing) {
 		t.Fatalf("existing sequence should be preserved: %s", fixed)
 	}
 	missing := []byte(`{"type":"response.completed"}`)
-	fixed, changed := fixStreamChunkBody(missing, false, &next)
+	fixed, changed := fixStreamChunkBody(missing, false, &next, "")
 	if !changed || !strings.Contains(string(fixed), `"sequence_number":8`) {
 		t.Fatalf("sequence state was not advanced: %s", fixed)
 	}
 	stringSequence := []byte(`{"type":"response.completed","sequence_number":"9"}`)
-	if fixed, changed := fixStreamChunkBody(stringSequence, false, &next); changed || !bytes.Equal(fixed, stringSequence) {
+	if fixed, changed := fixStreamChunkBody(stringSequence, false, &next, ""); changed || !bytes.Equal(fixed, stringSequence) {
 		t.Fatalf("string sequence should be preserved: %s", fixed)
 	}
 }
@@ -144,7 +144,7 @@ func TestFixStreamChunkBody_ResponsesSequenceNumbers(t *testing.T) {
 func TestFixStreamChunkBody_NestedSequenceNumberDoesNotSuppressRepair(t *testing.T) {
 	next := 0
 	input := []byte(`{"type":"response.created","response":{"metadata":{"sequence_number":"business-value"}}}`)
-	fixed, changed := fixStreamChunkBody(input, false, &next)
+	fixed, changed := fixStreamChunkBody(input, false, &next, "")
 	if !changed {
 		t.Fatal("expected top-level sequence repair")
 	}
@@ -172,7 +172,7 @@ func TestChatCompletionFragmentedArguments(t *testing.T) {
 	t.Cleanup(resetChatArgumentStreams)
 
 	first := []byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"timeout_ms\":230"}}]},"finish_reason":null}]}`)
-	firstOut, ok := fixStreamChunkBody(first, false, nil)
+	firstOut, ok := fixStreamChunkBody(first, false, nil, "")
 	if !ok {
 		t.Fatal("expected incomplete arguments to be withheld")
 	}
@@ -181,7 +181,7 @@ func TestChatCompletionFragmentedArguments(t *testing.T) {
 	}
 
 	second := []byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"00.0,\"ratio\":1.5}"}}]},"finish_reason":"tool_calls"}]}`)
-	secondOut, ok := fixStreamChunkBody(second, false, nil)
+	secondOut, ok := fixStreamChunkBody(second, false, nil, "")
 	if !ok {
 		t.Fatal("expected completed arguments to be emitted")
 	}
@@ -196,27 +196,27 @@ func TestChatCompletionFinishFlushesWithheldArguments(t *testing.T) {
 	t.Cleanup(resetChatArgumentStreams)
 
 	first := []byte(`data: {"id":"chatcmpl_2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"timeout_ms\":230"}}]},"finish_reason":null}]}`)
-	if _, ok := fixStreamChunkBody(first, false, nil); !ok {
+	if _, ok := fixStreamChunkBody(first, false, nil, ""); !ok {
 		t.Fatal("expected incomplete arguments to be withheld")
 	}
 
 	// Real streams finish with an empty delta; the withheld fragment must be
 	// flushed here instead of silently expiring.
 	final := []byte(`data: {"id":"chatcmpl_2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)
-	finalOut, ok := fixStreamChunkBody(final, false, nil)
+	finalOut, ok := fixStreamChunkBody(final, false, nil, "")
 	if !ok {
 		t.Fatal("expected finish chunk to flush withheld arguments")
 	}
 	if got := chatChunkArguments(t, finalOut); got != `{"timeout_ms":230` {
 		t.Fatalf("flushed arguments = %q, want raw partial fragment", got)
 	}
-	if hasWithheldChatArguments() {
+	if hasChatArgumentState() {
 		t.Fatal("withheld state should be empty after flush")
 	}
 
 	// A finish chunk with no withheld state stays untouched.
 	resetChatArgumentStreams()
-	out, ok := fixStreamChunkBody(final, false, nil)
+	out, ok := fixStreamChunkBody(final, false, nil, "")
 	if ok || !bytes.Equal(out, final) {
 		t.Fatalf("finish chunk without state changed: %q ok=%v", out, ok)
 	}
@@ -227,12 +227,12 @@ func TestChatCompletionFinishFlushMultipleTools(t *testing.T) {
 	t.Cleanup(resetChatArgumentStreams)
 
 	first := []byte(`data: {"id":"chatcmpl_3","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":1"}},{"index":1,"function":{"arguments":"{\"b\":2"}}]},"finish_reason":null}]}`)
-	if _, ok := fixStreamChunkBody(first, false, nil); !ok {
+	if _, ok := fixStreamChunkBody(first, false, nil, ""); !ok {
 		t.Fatal("expected fragments to be withheld")
 	}
 
 	final := []byte(`data: {"id":"chatcmpl_3","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)
-	finalOut, ok := fixStreamChunkBody(final, false, nil)
+	finalOut, ok := fixStreamChunkBody(final, false, nil, "")
 	if !ok {
 		t.Fatal("expected flush")
 	}
@@ -268,7 +268,7 @@ func TestPlainTextChunksUntouched(t *testing.T) {
 		[]byte(`data: {"id":"chatcmpl_4","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`),
 	}
 	for _, input := range inputs {
-		out, ok := fixStreamChunkBody(input, false, nil)
+		out, ok := fixStreamChunkBody(input, false, nil, "")
 		if ok || !bytes.Equal(out, input) {
 			t.Fatalf("plain chunk changed: in=%q out=%q ok=%v", input, out, ok)
 		}
@@ -276,10 +276,10 @@ func TestPlainTextChunksUntouched(t *testing.T) {
 
 	// The custom-tool "input" marker only matters when the option is on.
 	custom := []byte(`data: {"item":{"type":"custom_tool_call","input":"{\"n\":5.0}"}}`)
-	if out, ok := fixStreamChunkBody(custom, false, nil); ok || !bytes.Equal(out, custom) {
+	if out, ok := fixStreamChunkBody(custom, false, nil, ""); ok || !bytes.Equal(out, custom) {
 		t.Fatalf("custom input rewritten while disabled: %q", out)
 	}
-	if _, ok := fixStreamChunkBody(custom, true, nil); !ok {
+	if _, ok := fixStreamChunkBody(custom, true, nil, ""); !ok {
 		t.Fatal("expected custom input rewrite when enabled")
 	}
 }
@@ -348,6 +348,6 @@ func BenchmarkPlainTextDelta(b *testing.B) {
 	b.ReportAllocs()
 	for index := 0; index < b.N; index++ {
 		next := 0
-		fixStreamChunkBody(input, false, &next)
+		fixStreamChunkBody(input, false, &next, "")
 	}
 }

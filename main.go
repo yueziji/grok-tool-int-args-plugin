@@ -127,7 +127,7 @@ func cliproxyPluginFree(ptr unsafe.Pointer, _ C.size_t) {
 
 //export cliproxyPluginShutdown
 func cliproxyPluginShutdown() {
-	resetChatArgumentStreams()
+	resetStreamStates()
 }
 
 func writeResponse(response *C.cliproxy_buffer, raw []byte) {
